@@ -1,2 +1,5 @@
-discord.py
-google-generativeai
+discord.py==2.3.2
+quart==0.19.4
+google-genai==0.3.0
+requests==2.31.0
+asyncpg==0.29.0
