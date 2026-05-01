@@ -193,14 +193,27 @@ async def aicommand(ctx, *, instruction: str):
     - You must write valid discord.py asynchronous code.
     - You have access to 'ctx', 'bot', 'discord', and 'asyncio'.
     - Use \\n for new lines.
-    - UNCAPPED SERVER REVAMP RULE: You CAN create, delete, or edit as many channels/roles as the boss requests. HOWEVER, to prevent Discord API bans, you MUST add 'await asyncio.sleep(2)' between EVERY SINGLE creation, deletion, or modification in your code block. 
+    - VARIABLE RULE: If you are going to modify or send a message to a specific channel or role, YOU MUST DEFINE IT FIRST. Do not use variables like 'channel' without defining them via discord.utils.get(ctx.guild.channels, name=...) first.
+    - DISCORD RATE LIMIT RULE: Add 'await asyncio.sleep(2)' between EVERY SINGLE channel creation, deletion, or modification to prevent API bans.
     
-    ONLY RETURN RAW JSON. NO BACKTICKS. NO MARKDOWN.
+    OUTPUT STRICTLY A VALID JSON ARRAY starting with [ and ending with ]. NO OTHER TEXT.
     """
     try:
         messages = [{"role": "user", "content": prompt}]
         raw = ask_groq(messages)
-        clean_json = raw.replace('```json', '').replace('```', '').replace('```python', '').strip()
+        
+        # THE JSON SNIPER: Extracts only the brackets, ignoring AI conversational filler
+        start_idx = raw.find('[')
+        end_idx = raw.rfind(']')
+        
+        if start_idx != -1 and end_idx != -1:
+            clean_json = raw[start_idx:end_idx+1]
+        else:
+            # Fallback if the AI returns a single object instead of an array
+            clean_json = raw.replace('```json', '').replace('```', '').replace('```python', '').strip()
+            if clean_json.startswith('{') and clean_json.endswith('}'):
+                clean_json = f"[{clean_json}]"
+                
         actions = json.loads(clean_json)
         
         for act in actions:
