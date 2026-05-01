@@ -173,22 +173,29 @@ async def aicommand(ctx, *, instruction: str):
         return await ctx.send("🤖 **habbibi mod (::** AI is offline.")
 
     await ctx.defer()
+    
     prompt = f"""
     You are "habbibi mod (:", an omnipotent Discord bot with GOD-MODE enabled.
     The boss "{ctx.author.name}" said: "{instruction}"
     
     Turn this into a JSON array of actions. 
-    BASIC FORMATS:
+    
+    If the boss asks for basic moderation, use these:
     1. Reply: {{"action": "reply", "message": "text"}}
     2. Ban: {{"action": "ban", "target": "username", "reason": "text"}}
     3. Mute: {{"action": "mute", "target": "username", "minutes": 10}}
     4. Create Command: {{"action": "create_command", "trigger": "word", "reply": "text"}}
     
-    GOD-MODE FORMAT (Use this for ANYTHING else like renaming channels, creating roles, making categories, etc):
-    5. Execute Python: {{"action": "execute", "code": "await ctx.guild.create_text_channel('royal-hall')\\nawait ctx.send('Done!')"}}
-    *IMPORTANT: When using 'execute', write valid asynchronous discord.py Python code. You have access to 'ctx', 'bot', and 'discord'. Use \\n for new lines.*
-
-    ONLY RETURN RAW JSON.
+    FOR LITERALLY ANYTHING ELSE (themes, making channels, renaming things, deleting channels, roles), YOU MUST FIGURE OUT THE PYTHON CODE YOURSELF AND USE THE EXECUTE ACTION:
+    5. Execute Python: {{"action": "execute", "code": "await ctx.guild.create_text_channel('gothic-chat')\\nawait ctx.send('Channel created!')"}}
+    
+    STRICT RULES FOR EXECUTE:
+    - You must write valid discord.py asynchronous code.
+    - You have access to 'ctx', 'bot', 'discord', and 'asyncio'.
+    - Use \\n for new lines.
+    - UNCAPPED SERVER REVAMP RULE: You CAN create, delete, or edit as many channels/roles as the boss requests. HOWEVER, to prevent Discord API bans, you MUST add 'await asyncio.sleep(2)' between EVERY SINGLE creation, deletion, or modification in your code block. 
+    
+    ONLY RETURN RAW JSON. NO BACKTICKS. NO MARKDOWN.
     """
     try:
         messages = [{"role": "user", "content": prompt}]
@@ -223,14 +230,12 @@ async def aicommand(ctx, *, instruction: str):
             # THE GOD-MODE EXECUTOR
             elif atype == "execute":
                 code = act.get("code", "")
-                await ctx.send("⚡ **AI is executing dynamic Python code...**")
+                await ctx.send("⚡ **AI is executing massive dynamic Python code. Please wait...**")
                 try:
-                    # Wrap the AI's code in an async function so it can use 'await'
                     wrapped_code = f"async def __ai_exec():\n"
                     for line in code.split("\n"):
                         wrapped_code += f"    {line}\n"
                     
-                    # Create an environment for the code to run in
                     exec_env = {
                         'discord': discord,
                         'bot': bot,
@@ -238,7 +243,6 @@ async def aicommand(ctx, *, instruction: str):
                         'asyncio': asyncio
                     }
                     
-                    # Execute the raw code
                     exec(wrapped_code, exec_env)
                     await exec_env['__ai_exec']()
                 except Exception as code_error:
