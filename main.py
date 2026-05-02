@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import os
 import json
@@ -35,8 +35,9 @@ def get_default_db():
     return {
         "warns": {}, 
         "jailed": {}, 
-        "config": {"filterwords": [], "ai_channel": None}, 
+        "config": {"filterwords": [], "ai_channel": None, "cmd_channel": None, "event_channel": None}, 
         "economy": {},
+        "levels": {},
         "custom_commands": {} 
     }
 
@@ -52,11 +53,25 @@ def save_db(data):
         json.dump(data, f, indent=4)
 
 db = load_db()
-start_time = time.time()
 
+# Economy & Level Helpers
 def get_eco(uid):
     if uid not in db["economy"]: db["economy"][uid] = 0
     return db["economy"][uid]
+
+def add_eco(uid, amount):
+    db["economy"][uid] = get_eco(uid) + amount
+
+def add_xp(uid):
+    if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
+    db["levels"][uid]["xp"] += random.randint(10, 25)
+    current_xp = db["levels"][uid]["xp"]
+    current_lvl = db["levels"][uid]["level"]
+    next_lvl_xp = (current_lvl * 100) * 1.5
+    if current_xp >= next_lvl_xp:
+        db["levels"][uid]["level"] += 1
+        return db["levels"][uid]["level"]
+    return None
 
 def find_member(ctx, search_term):
     if not search_term: return None
@@ -67,6 +82,25 @@ def find_member(ctx, search_term):
             return m
     return None
 
+# ==========================================
+# 2. AUTO MODEL SWAPPER 
+# ==========================================
+def ask_groq(messages):
+    if not client: raise Exception("Groq API Key is missing.")
+    fallback_models = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]
+    last_error = None
+    for model in fallback_models:
+        try:
+            completion = client.chat.completions.create(model=model, messages=messages)
+            return completion.choices[0].message.content.strip()
+        except Exception as e:
+            last_error = e
+            continue 
+    raise Exception(f"All AI models failed. Last Error: {last_error}")
+
+# ==========================================
+# 3. ON READY & AUTOMATED EVENT LOOP
+# ==========================================
 @bot.event
 async def on_ready():
     print(f"✅ habbibi mod (: logged in as {bot.user}")
@@ -75,103 +109,125 @@ async def on_ready():
         print(f"🔄 Synced {len(synced)} slash commands!")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
-
-# ==========================================
-# 2. AUTO MODEL SWAPPER 
-# ==========================================
-
-def ask_groq(messages):
-    if not client:
-        raise Exception("Groq API Key is missing.")
     
-    fallback_models = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768"
+    if not ai_event_loop.is_running():
+        ai_event_loop.start()
+
+@tasks.loop(minutes=60)
+async def ai_event_loop():
+    """Triggers a random AI event every 60 minutes in the designated channel."""
+    if not client: return
+    channel_id = db["config"].get("event_channel")
+    if not channel_id: return
+    
+    channel = bot.get_channel(channel_id)
+    if not channel: return
+
+    prompt = """
+    You are the Dungeon Master of a Discord server. Generate a random, engaging server event. 
+    It can be a lore drop about a mysterious traveler, a boss monster appearing, or a blessing from the gods.
+    Make it epic, funny, and use internet slang. Keep it under 3 paragraphs. 
+    Do NOT output JSON. Just output the raw message to send to the chat.
+    """
+    try:
+        reply = ask_groq([{"role": "user", "content": prompt}])
+        embed = discord.Embed(title="🚨 RANDOM SERVER EVENT 🚨", description=reply, color=discord.Color.dark_purple())
+        await channel.send(embed=embed)
+    except Exception as e:
+        print(f"Event Loop Error: {e}")
+
+# ==========================================
+# 4. COMMAND CHANNEL BINDING
+# ==========================================
+@bot.check
+async def check_command_channel(ctx):
+    """Ensures normal users only use commands in the designated bot channel."""
+    if ctx.author.guild_permissions.administrator: return True # Admins bypass this
+    
+    cmd_channel_id = db["config"].get("cmd_channel")
+    if not cmd_channel_id: return True # If no channel is set, allow anywhere
+    
+    if ctx.channel.id != cmd_channel_id:
+        cmd_chan = ctx.guild.get_channel(cmd_channel_id)
+        if cmd_chan:
+            await ctx.send(f"❌ Commands belong in {cmd_chan.mention}, bozo.", delete_after=5)
+        return False
+    return True
+
+# ==========================================
+# 5. SERVER DEPLOYER & GOD-MODE
+# ==========================================
+@bot.hybrid_command(name="deployserver", description="WARNING: Deletes ALL channels/roles and builds a top-tier server from scratch.")
+@commands.has_permissions(administrator=True)
+async def deployserver(ctx):
+    await ctx.send("⚠️ **INITIATING PROJECT ZERO.** Wiping current server and building the Ultimate Kingdom...\n*This will take a few minutes to bypass Discord limits.*")
+    guild = ctx.guild
+
+    # 1. DELETE EXISTING CHANNELS (SLOWLY)
+    for channel in guild.channels:
+        try: 
+            await channel.delete()
+            await asyncio.sleep(0.5)
+        except: pass
+
+    # 2. DELETE EXISTING ROLES (SLOWLY)
+    for role in guild.roles:
+        if role.name != "@everyone" and not role.managed and role < ctx.guild.me.top_role:
+            try: 
+                await role.delete()
+                await asyncio.sleep(0.5)
+            except: pass
+
+    # 3. BUILD NEW ROLES
+    roles_to_make = [
+        {"name": "👑 Emperor", "color": discord.Color.gold(), "admin": True},
+        {"name": "⚔️ High Council", "color": discord.Color.dark_red(), "admin": False},
+        {"name": "🛡️ Knight", "color": discord.Color.blue(), "admin": False},
+        {"name": "📜 Citizen", "color": discord.Color.light_grey(), "admin": False},
+        {"name": "Jailed", "color": discord.Color.dark_grey(), "admin": False}
     ]
+    created_roles = {}
+    for r in roles_to_make:
+        perms = discord.Permissions(administrator=r["admin"])
+        new_role = await guild.create_role(name=r["name"], color=r["color"], permissions=perms, hoist=True)
+        created_roles[r["name"]] = new_role
+        await asyncio.sleep(1)
+        
+    await ctx.author.add_roles(created_roles["👑 Emperor"])
+
+    # 4. BUILD NEW CATEGORIES & CHANNELS
+    cat_hub = await guild.create_category("🏰 THE KINGDOM HUB")
+    await guild.create_text_channel("rules", category=cat_hub)
+    announcements = await guild.create_text_channel("announcements", category=cat_hub)
     
-    last_error = None
-    for model in fallback_models:
-        try:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=messages
-            )
-            return completion.choices[0].message.content.strip()
-        except Exception as e:
-            last_error = e
-            continue 
-            
-    raise Exception(f"All AI models failed. Last Error: {last_error}")
+    cat_chat = await guild.create_category("🗣️ LORE & CHAT")
+    gen_chat = await guild.create_text_channel("general", category=cat_chat)
+    bot_cmds = await guild.create_text_channel("bot-commands", category=cat_chat)
+    ai_chat = await guild.create_text_channel("talk-to-ai", category=cat_chat)
+    
+    cat_vc = await guild.create_category("🔊 TAVERN (VOICE)")
+    await guild.create_voice_channel("Lounge", category=cat_vc)
+    await guild.create_voice_channel("Gaming", category=cat_vc)
 
-# ==========================================
-# 3. AUTONOMOUS AI & DM CHAT
-# ==========================================
+    # 5. LOCK JAIL
+    jail_role = created_roles["Jailed"]
+    for cat in guild.categories:
+        await cat.set_permissions(jail_role, read_messages=False, connect=False)
 
-@bot.listen('on_message')
-async def ai_auto_chat(message):
-    if message.author.bot: return
-
-    if message.content.startswith('!') and len(message.content) > 1:
-        cmd = message.content[1:].split()[0].lower()
-        if cmd in db["custom_commands"]:
-            await message.channel.send(db["custom_commands"][cmd])
-            return 
-
-    is_dm = isinstance(message.channel, discord.DMChannel)
-    is_ai_channel = (message.channel.id == db["config"].get("ai_channel"))
-
-    if (is_dm or is_ai_channel) and not message.content.startswith(('!', '/')):
-        if not client: return
-        async with message.channel.typing():
-            try:
-                system_prompt = "You are habbibi mod (:, a chaotic, helpful, and sarcastic Discord bot. Be concise and keep the internet slang."
-                if is_dm: system_prompt += " You are in their DMs providing 1-on-1 support."
-                
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message.content}
-                ]
-                reply = ask_groq(messages)
-                await message.channel.send(reply[:2000])
-            except Exception as e:
-                await message.channel.send(f"❌ My AI brain glitched: {e}")
-
-@bot.hybrid_command(name="setaichannel", description="Sets the current channel for the AI to auto-reply to everything.")
-@commands.has_permissions(administrator=True)
-async def setaichannel(ctx):
-    db["config"]["ai_channel"] = ctx.channel.id
+    # 6. BIND BOT CONFIG
+    db["config"]["cmd_channel"] = bot_cmds.id
+    db["config"]["ai_channel"] = ai_chat.id
+    db["config"]["event_channel"] = gen_chat.id
     save_db(db)
-    await ctx.send("🤖 **AI Channel Set!** I will now reply to every message sent in this channel automatically.")
 
-@bot.hybrid_command(name="unsetaichannel", description="Stops the AI from auto-replying in the channel.")
-@commands.has_permissions(administrator=True)
-async def unsetaichannel(ctx):
-    db["config"]["ai_channel"] = None
-    save_db(db)
-    await ctx.send("🔇 **AI Channel Disabled.** I will only speak when spoken to.")
-
-# ==========================================
-# 4. GOD-MODE AI COMMANDER & RESET
-# ==========================================
-
-@bot.hybrid_command(name="reset", description="Wipes the bot's memory and resets to original factory state.")
-@commands.has_permissions(administrator=True)
-async def reset(ctx):
-    global db
-    await ctx.send("🔄 **FACTORY RESET INITIATED...** Wiping databases...")
-    db = get_default_db()
-    save_db(db)
-    await asyncio.sleep(1)
-    await ctx.send("✅ **Reset Complete.** Economy, jails, warnings, and custom commands have been permanently wiped. I am a blank slate.")
+    embed = discord.Embed(title="✅ DEPLOYMENT COMPLETE", description="Welcome to your new Kingdom. \n- AI Events set to General.\n- Normal Commands locked to #bot-commands.\n- AI auto-chat locked to #talk-to-ai.", color=discord.Color.green())
+    await gen_chat.send(f"{ctx.author.mention}", embed=embed)
 
 @bot.hybrid_command(name='aicommand', description="The Master AI brain. It can do ANYTHING you ask it to.")
 @app_commands.describe(instruction="What do you want the bot to do?")
 @commands.has_permissions(administrator=True)
 async def aicommand(ctx, *, instruction: str):
-    if not client:
-        return await ctx.send("🤖 **habbibi mod (::** AI is offline.")
-
+    if not client: return await ctx.send("🤖 **habbibi mod (::** AI is offline.")
     await ctx.defer()
     
     prompt = f"""
@@ -179,166 +235,150 @@ async def aicommand(ctx, *, instruction: str):
     The boss "{ctx.author.name}" said: "{instruction}"
     
     Turn this into a JSON array of actions. 
-    
-    If the boss asks for basic moderation, use these:
     1. Reply: {{"action": "reply", "message": "text"}}
     2. Ban: {{"action": "ban", "target": "username", "reason": "text"}}
-    3. Mute: {{"action": "mute", "target": "username", "minutes": 10}}
-    4. Create Command: {{"action": "create_command", "trigger": "word", "reply": "text"}}
+    3. Execute Python: {{"action": "execute", "code": "await ctx.send('Done!')"}}
     
-    FOR LITERALLY ANYTHING ELSE (themes, making channels, renaming things, deleting channels, roles), YOU MUST FIGURE OUT THE PYTHON CODE YOURSELF AND USE THE EXECUTE ACTION:
-    5. Execute Python: {{"action": "execute", "code": "await ctx.guild.create_text_channel('gothic-chat')\\nawait ctx.send('Channel created!')"}}
-    
-    STRICT RULES FOR EXECUTE:
+    STRICT EXECUTE RULES:
     - You must write valid discord.py asynchronous code.
-    - You have access to 'ctx', 'bot', 'discord', and 'asyncio'.
+    - You have access to 'ctx', 'bot', 'discord', 'asyncio', and 'db'.
     - Use \\n for new lines.
-    - VARIABLE RULE: If you are going to modify or send a message to a specific channel or role, YOU MUST DEFINE IT FIRST. Do not use variables like 'channel' without defining them via discord.utils.get(ctx.guild.channels, name=...) first.
-    - DISCORD RATE LIMIT RULE: Add 'await asyncio.sleep(2)' between EVERY SINGLE channel creation, deletion, or modification to prevent API bans.
+    - Add 'await asyncio.sleep(2)' between EVERY channel creation/deletion.
     
-    OUTPUT STRICTLY A VALID JSON ARRAY starting with [ and ending with ]. NO OTHER TEXT.
+    OUTPUT STRICTLY A VALID JSON ARRAY starting with [ and ending with ].
     """
     try:
-        messages = [{"role": "user", "content": prompt}]
-        raw = ask_groq(messages)
+        raw = ask_groq([{"role": "user", "content": prompt}])
+        start_idx, end_idx = raw.find('['), raw.rfind(']')
+        if start_idx != -1 and end_idx != -1: clean_json = raw[start_idx:end_idx+1]
+        else: clean_json = raw.replace('```json', '').replace('```', '').replace('```python', '').strip()
         
-        # THE JSON SNIPER: Extracts only the brackets, ignoring AI conversational filler
-        start_idx = raw.find('[')
-        end_idx = raw.rfind(']')
-        
-        if start_idx != -1 and end_idx != -1:
-            clean_json = raw[start_idx:end_idx+1]
-        else:
-            # Fallback if the AI returns a single object instead of an array
-            clean_json = raw.replace('```json', '').replace('```', '').replace('```python', '').strip()
-            if clean_json.startswith('{') and clean_json.endswith('}'):
-                clean_json = f"[{clean_json}]"
-                
         actions = json.loads(clean_json)
         
         for act in actions:
             atype = act.get("action")
-            target_str = act.get("target")
-            member = find_member(ctx, target_str) if target_str else None
-
-            if atype == "reply":
-                await ctx.send(f"🤖 **habbibi mod (::** {act.get('message')}")
-            
-            elif atype == "ban" and member:
-                await member.ban(reason=act.get("reason", "AI Ban"))
-                await ctx.send(f"🔨 AI Banished {member.mention}.")
-                
-            elif atype == "mute" and member:
-                mins = int(act.get("minutes", 10))
-                await member.timeout(timedelta(minutes=mins))
-                await ctx.send(f"🔇 AI Muted {member.mention} for {mins}m.")
-                
-            elif atype == "create_command":
-                trigger = act.get("trigger", "").lower().replace("!", "")
-                reply_txt = act.get("reply", "No reply set.")
-                db["custom_commands"][trigger] = reply_txt
-                save_db(db)
-                await ctx.send(f"🧠 **AI Learned a New Trick!**\nYou can now type `!{trigger}` to use it.")
-            
-            # THE GOD-MODE EXECUTOR
+            if atype == "reply": await ctx.send(f"🤖 **habbibi mod (::** {act.get('message')}")
+            elif atype == "ban" and act.get("target"):
+                member = find_member(ctx, act.get("target"))
+                if member:
+                    await member.ban(reason=act.get("reason", "AI Ban"))
+                    await ctx.send(f"🔨 AI Banished {member.mention}.")
             elif atype == "execute":
                 code = act.get("code", "")
-                await ctx.send("⚡ **AI is executing massive dynamic Python code. Please wait...**")
+                await ctx.send("⚡ **AI is executing dynamic Python code...**")
                 try:
                     wrapped_code = f"async def __ai_exec():\n"
-                    for line in code.split("\n"):
-                        wrapped_code += f"    {line}\n"
-                    
-                    exec_env = {
-                        'discord': discord,
-                        'bot': bot,
-                        'ctx': ctx,
-                        'asyncio': asyncio
-                    }
-                    
+                    for line in code.split("\n"): wrapped_code += f"    {line}\n"
+                    exec_env = {'discord': discord, 'bot': bot, 'ctx': ctx, 'asyncio': asyncio, 'db': db}
                     exec(wrapped_code, exec_env)
                     await exec_env['__ai_exec']()
                 except Exception as code_error:
                     await ctx.send(f"⚠️ AI Code Execution Failed:\n```py\n{code_error}\n```")
-                
     except Exception as e:
         await ctx.send(f"❌ AI Error: {e}")
 
-@bot.hybrid_command(name='askai', description="Ask the AI a question.")
-@app_commands.describe(question="What do you want to ask?")
-async def askai(ctx, *, question: str):
-    if not client: return await ctx.send("AI is sleeping.")
-    await ctx.defer()
-    try:
-        messages = [
-            {"role": "system", "content": "You are habbibi mod (:, a funny, sarcastic Discord bot using internet slang."},
-            {"role": "user", "content": question}
-        ]
-        reply = ask_groq(messages)
-        await ctx.send(reply[:2000])
-    except Exception as e:
-        await ctx.send(f"❌ Error: {e}")
+# ==========================================
+# 6. MESSAGE LISTENER (AI, XP, AUTOMOD)
+# ==========================================
+@bot.listen('on_message')
+async def on_message_listener(message):
+    if message.author.bot or not message.guild: return
+
+    # 1. Automod
+    for word in db["config"]["filterwords"]:
+        if word in message.content.lower():
+            await message.delete()
+            return await message.channel.send(f"⚠️ {message.author.mention}, that word is banned!", delete_after=5)
+
+    # 2. XP Leveling
+    leveled_up = add_xp(str(message.author.id))
+    if leveled_up:
+        save_db(db)
+        await message.channel.send(f"🎉 **{message.author.mention} leveled up to Level {leveled_up}!**")
+    
+    # 3. Custom Commands
+    if message.content.startswith('!') and len(message.content) > 1:
+        cmd = message.content[1:].split()[0].lower()
+        if cmd in db["custom_commands"]:
+            return await message.channel.send(db["custom_commands"][cmd])
+
+    # 4. AI Auto-Chat
+    is_ai_channel = (message.channel.id == db["config"].get("ai_channel"))
+    if is_ai_channel and not message.content.startswith(('!', '/')):
+        if not client: return
+        async with message.channel.typing():
+            try:
+                reply = ask_groq([
+                    {"role": "system", "content": "You are habbibi mod (:, a sarcastic Discord bot."},
+                    {"role": "user", "content": message.content}
+                ])
+                await message.channel.send(reply[:2000])
+            except Exception as e:
+                await message.channel.send(f"❌ AI glitched: {e}")
 
 # ==========================================
-# 5. HYBRID MANUAL MODERATION
+# 7. ECONOMY & RPG COMMANDS
 # ==========================================
+@bot.hybrid_command(name="bal", description="Check your coin balance.")
+async def bal(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    await ctx.send(f"💰 {member.name} has **{get_eco(str(member.id))}** coins.")
 
-@bot.hybrid_command(name="kick", description="Kicks a member from the server.")
-@commands.has_permissions(kick_members=True)
-async def kick(ctx, member: discord.Member, *, reason: str = "Caught lacking"):
-    await member.kick(reason=reason)
-    await ctx.send(f"👢 **{member.name}** just got YEETED! 💨 Reason: {reason}")
-
-@bot.hybrid_command(name="ban", description="Bans a member from the server.")
-@commands.has_permissions(ban_members=True)
-async def ban(ctx, member: discord.Member, *, reason: str = "Crossed the line"):
-    await member.ban(reason=reason)
-    await ctx.send(f"🔨 {member.mention} has been banished. Reason: {reason}")
-
-@bot.hybrid_command(name="unban", description="Unbans a user ID.")
-@commands.has_permissions(ban_members=True)
-async def unban(ctx, user_id: str, *, reason: str = "Forgiven"):
-    user = await bot.fetch_user(int(user_id))
-    await ctx.guild.unban(user, reason=reason)
-    await ctx.send(f"🕊️ {user.mention} revived from the dead.")
-
-@bot.hybrid_command(name="mute", description="Time out a member.")
-@commands.has_permissions(moderate_members=True)
-async def mute(ctx, member: discord.Member, minutes: int, *, reason: str = "Yapping"):
-    await member.timeout(timedelta(minutes=minutes), reason=reason)
-    await ctx.send(f"🔇 {member.mention} timed out for {minutes}m.")
-
-@bot.hybrid_command(name="unmute", description="Remove timeout from a member.")
-@commands.has_permissions(moderate_members=True)
-async def unmute(ctx, member: discord.Member):
-    await member.timeout(None)
-    await ctx.send(f"🔊 {member.mention} is off the leash.")
-
-@bot.hybrid_command(name="jail", description="Strips roles and locks a user in jail.")
-@commands.has_permissions(administrator=True)
-async def jail(ctx, member: discord.Member):
-    db["jailed"][str(member.id)] = [role.id for role in member.roles if role.id != ctx.guild.default_role.id]
+@bot.hybrid_command(name="work", description="Work to earn coins.")
+@commands.cooldown(1, 3600, commands.BucketType.user) # 1 hour cooldown
+async def work(ctx):
+    earned = random.randint(100, 300)
+    add_eco(str(ctx.author.id), earned)
     save_db(db)
-    for role in member.roles[1:]:
-        try: await member.remove_roles(role)
-        except: pass
-    jail_role = discord.utils.get(ctx.guild.roles, name="Jailed")
-    if not jail_role:
-        jail_role = await ctx.guild.create_role(name="Jailed", color=discord.Color.dark_grey())
-        for channel in ctx.guild.channels: await channel.set_permissions(jail_role, read_messages=False)
-    await member.add_roles(jail_role)
-    await ctx.send(f"⛓️ {member.mention} is locked up.")
+    await ctx.send(f"💼 You worked a grueling shift and earned **{earned} coins**!")
 
-@bot.hybrid_command(name="unjail", description="Releases a user and restores roles.")
-@commands.has_permissions(administrator=True)
-async def unjail(ctx, member: discord.Member):
-    jail_role = discord.utils.get(ctx.guild.roles, name="Jailed")
-    if jail_role in member.roles: await member.remove_roles(jail_role)
-    for role_id in db["jailed"].pop(str(member.id), []):
-        role = ctx.guild.get_role(role_id)
-        if role: await member.add_roles(role)
+@bot.hybrid_command(name="crime", description="Commit a crime for coins (risky).")
+@commands.cooldown(1, 3600, commands.BucketType.user)
+async def crime(ctx):
+    uid = str(ctx.author.id)
+    if random.choice([True, False]):
+        earned = random.randint(300, 700)
+        add_eco(uid, earned)
+        await ctx.send(f"🥷 You successfully robbed the royal vault for **{earned} coins**!")
+    else:
+        lost = random.randint(100, 250)
+        db["economy"][uid] = max(0, get_eco(uid) - lost)
+        await ctx.send(f"🚓 The guards caught you! You paid a fine of **{lost} coins**.")
     save_db(db)
-    await ctx.send(f"🔓 {member.mention} made bail.")
+
+@bot.hybrid_command(name="rob", description="Attempt to steal from another user.")
+@commands.cooldown(1, 7200, commands.BucketType.user) # 2 hour cooldown
+async def rob(ctx, member: discord.Member):
+    uid, target_id = str(ctx.author.id), str(member.id)
+    if get_eco(target_id) < 100:
+        return await ctx.send(f"❌ {member.name} is too poor to rob.")
+    
+    if random.choice([True, False]):
+        stolen = random.randint(50, int(get_eco(target_id) * 0.2)) # Steal up to 20%
+        db["economy"][target_id] -= stolen
+        add_eco(uid, stolen)
+        await ctx.send(f"🔫 You violently mugged {member.name} and stole **{stolen} coins**!")
+    else:
+        fine = 200
+        db["economy"][uid] = max(0, get_eco(uid) - fine)
+        await ctx.send(f"🛡️ {member.name} fought back! You dropped **{fine} coins** running away.")
+    save_db(db)
+
+@bot.hybrid_command(name="level", description="Check your current RPG Level.")
+async def level(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    uid = str(member.id)
+    lvl_data = db["levels"].get(uid, {"xp": 0, "level": 1})
+    await ctx.send(f"⭐ **{member.name}** is Level **{lvl_data['level']}** ({lvl_data['xp']} XP).")
+
+# ==========================================
+# 8. STANDARD MODERATION 
+# ==========================================
+@bot.hybrid_command(name="purge", description="Deletes multiple messages.")
+@commands.has_permissions(manage_messages=True)
+async def purge(ctx, amount: int):
+    await ctx.channel.purge(limit=amount + 1)
+    await ctx.send(f"🧹 Swept {amount} messages.", delete_after=3)
 
 @bot.hybrid_command(name="nuke", description="Deletes and clones the current channel.")
 @commands.has_permissions(administrator=True)
@@ -349,147 +389,8 @@ async def nuke(ctx):
     await new_channel.edit(position=pos)
     await new_channel.send("☢️ **TACTICAL NUKE INCOMING!** 💥")
 
-@bot.hybrid_command(name="purge", description="Deletes multiple messages.")
-@commands.has_permissions(manage_messages=True)
-async def purge(ctx, amount: int):
-    await ctx.channel.purge(limit=amount + 1)
-    await ctx.send(f"🧹 Swept {amount} messages.", delete_after=3)
-
-@bot.hybrid_command(name="lock", description="Locks the current channel.")
-@commands.has_permissions(manage_channels=True)
-async def lock(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
-    await ctx.send("🔒 Channel locked.")
-
-@bot.hybrid_command(name="unlock", description="Unlocks the current channel.")
-@commands.has_permissions(manage_channels=True)
-async def unlock(ctx):
-    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
-    await ctx.send("🔓 Channel unlocked.")
-
 # ==========================================
-# 6. HYBRID WARNING SYSTEM
-# ==========================================
-
-@bot.hybrid_command(name="warn", description="Warns a user.")
-@commands.has_permissions(kick_members=True)
-async def warn(ctx, member: discord.Member, *, reason: str = "Bad vibes"):
-    uid = str(member.id)
-    if uid not in db["warns"]: db["warns"][uid] = []
-    db["warns"][uid].append({"id": len(db["warns"][uid])+1, "reason": reason, "mod": ctx.author.name})
-    save_db(db)
-    await ctx.send(f"⚠️ {member.mention} warned. Reason: {reason}")
-
-@bot.hybrid_command(name="warnings", description="Shows a user's warnings.")
-@commands.has_permissions(kick_members=True)
-async def warnings(ctx, member: discord.Member):
-    warns = db["warns"].get(str(member.id), [])
-    if not warns: return await ctx.send("✅ Clean record.")
-    embed = discord.Embed(title=f"Warnings for {member.name}", color=discord.Color.orange())
-    for w in warns: embed.add_field(name=f"ID: {w['id']} | Mod: {w['mod']}", value=w['reason'], inline=False)
-    await ctx.send(embed=embed)
-
-@bot.hybrid_command(name="clearwarns", description="Clears all warnings for a user.")
-@commands.has_permissions(administrator=True)
-async def clearwarns(ctx, member: discord.Member):
-    db["warns"].pop(str(member.id), None)
-    save_db(db)
-    await ctx.send(f"🗑️ Cleared warnings for {member.mention}.")
-
-@bot.hybrid_command(name="filterword", description="Add or remove words from the automod blacklist.")
-@commands.has_permissions(administrator=True)
-async def filterword(ctx, action: str, word: str):
-    if action.lower() == "add":
-        db["config"]["filterwords"].append(word.lower())
-        await ctx.send(f"🚫 Added `{word}` to blacklist.")
-    elif action.lower() == "remove" and word.lower() in db["config"]["filterwords"]:
-        db["config"]["filterwords"].remove(word.lower())
-        await ctx.send(f"✅ Removed `{word}` from blacklist.")
-    save_db(db)
-
-# ==========================================
-# 7. HYBRID INFO & GAMES
-# ==========================================
-
-@bot.hybrid_command(name="ping", description="Check bot latency.")
-async def ping(ctx): 
-    await ctx.send(f"🏓 Pong! {round(bot.latency * 1000)}ms")
-
-@bot.hybrid_command(name="avatar", description="Get a user's profile picture.")
-async def avatar(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    embed = discord.Embed(title=f"{member.name}'s Avatar", color=discord.Color.blue())
-    embed.set_image(url=member.avatar.url if member.avatar else member.default_avatar.url)
-    await ctx.send(embed=embed)
-
-@bot.hybrid_command(name="serverinfo", description="View server stats.")
-async def serverinfo(ctx):
-    guild = ctx.guild
-    embed = discord.Embed(title=f"Server Info - {guild.name}", color=discord.Color.gold())
-    embed.add_field(name="👑 Owner", value=guild.owner.mention)
-    embed.add_field(name="👥 Members", value=guild.member_count)
-    await ctx.send(embed=embed)
-
-@bot.hybrid_command(name="eightball", description="Ask the magic 8ball.")
-async def eightball(ctx, *, question: str):
-    responses = ["Yes definitely.", "Ask again later.", "My sources say no."]
-    await ctx.send(f"🎱 **Question:** {question}\n**Answer:** {random.choice(responses)}")
-
-@bot.hybrid_command(name="coinflip", description="Flip a coin.")
-async def coinflip(ctx):
-    await ctx.send(f"🪙 You flipped: **{random.choice(['Heads', 'Tails'])}**")
-
-@bot.hybrid_command(name="hack", description="Fake hack a user.")
-async def hack(ctx, member: discord.Member):
-    await ctx.send(f"💻 Hacking {member.name}...\n✅ Successfully hacked {member.mention}. Selling their search history for 5 robux.")
-
-# ==========================================
-# 8. HYBRID ECONOMY SYSTEM
-# ==========================================
-
-@bot.hybrid_command(name="bal", description="Check your coin balance.")
-async def bal(ctx, member: discord.Member = None):
-    member = member or ctx.author
-    uid = str(member.id)
-    await ctx.send(f"💰 {member.name} has **{get_eco(uid)}** coins.")
-
-@bot.hybrid_command(name="work", description="Work to earn coins.")
-async def work(ctx):
-    uid = str(ctx.author.id)
-    earned = random.randint(50, 200)
-    db["economy"][uid] = get_eco(uid) + earned
-    save_db(db)
-    await ctx.send(f"💼 You worked a grueling shift and earned **{earned} coins**!")
-
-@bot.hybrid_command(name="crime", description="Commit a crime for coins (risky).")
-async def crime(ctx):
-    uid = str(ctx.author.id)
-    if random.choice([True, False]):
-        earned = random.randint(200, 500)
-        db["economy"][uid] = get_eco(uid) + earned
-        save_db(db)
-        await ctx.send(f"🥷 You robbed a bank and got away with **{earned} coins**!")
-    else:
-        lost = random.randint(50, 150)
-        db["economy"][uid] = max(0, get_eco(uid) - lost)
-        save_db(db)
-        await ctx.send(f"🚓 You got caught by the feds and fined **{lost} coins**.")
-
-# ==========================================
-# 9. AUTOMOD LISTENER
-# ==========================================
-
-@bot.listen('on_message')
-async def auto_mod(message):
-    if message.author.bot or not message.guild: return
-    for word in db["config"]["filterwords"]:
-        if word in message.content.lower():
-            await message.delete()
-            await message.channel.send(f"⚠️ {message.author.mention}, that word is banned!", delete_after=5)
-            return
-
-# ==========================================
-# 10. RENDER BOOT UP
+# 9. RENDER BOOT UP
 # ==========================================
 if __name__ == "__main__":
     keep_alive()
