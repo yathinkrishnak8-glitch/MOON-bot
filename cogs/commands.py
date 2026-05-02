@@ -6,7 +6,7 @@ import json
 import random
 import asyncio
 from datetime import timedelta
-from groq import Groq
+from groq import AsyncGroq
 
 # ==========================================
 # DATABASE & MEMORY SETUP
@@ -44,8 +44,58 @@ snipes = {}
 edit_snipes = {}
 
 # ==========================================
-# INTERACTIVE UI PANELS
+# OVERPOWERED UI PANELS (Buttons)
 # ==========================================
+class ConfirmView(discord.ui.View):
+    def __init__(self, ctx):
+        super().__init__(timeout=30)
+        self.ctx = ctx
+        self.value = None
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("❌ This is not your button!", ephemeral=True)
+        self.value = True
+        for child in self.children: child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("❌ This is not your button!", ephemeral=True)
+        self.value = False
+        for child in self.children: child.disabled = True
+        await interaction.response.edit_message(view=self)
+        self.stop()
+
+class PaginationView(discord.ui.View):
+    def __init__(self, ctx, embeds):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.embeds = embeds
+        self.current_page = 0
+        self.update_buttons()
+
+    def update_buttons(self):
+        self.children[0].disabled = self.current_page == 0
+        self.children[1].disabled = self.current_page == len(self.embeds) - 1
+
+    @discord.ui.button(label="◀️ Prev", style=discord.ButtonStyle.primary)
+    async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author: return await interaction.response.send_message("❌ Not yours!", ephemeral=True)
+        self.current_page -= 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
+
+    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.primary)
+    async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author: return await interaction.response.send_message("❌ Not yours!", ephemeral=True)
+        self.current_page += 1
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
+
 class BuyButton(discord.ui.Button):
     def __init__(self, item):
         super().__init__(label=f"Buy {item['name']} ({item['price']:,})", style=discord.ButtonStyle.success)
@@ -54,17 +104,14 @@ class BuyButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         uid = str(interaction.user.id)
         if db["economy"].get(uid, 0) < self.item["price"]:
-            embed = discord.Embed(description=f"❌ You don't have enough coins for **{self.item['name']}**.", color=discord.Color.red())
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
+            return await interaction.response.send_message(embed=discord.Embed(description=f"❌ You need **{self.item['price']:,} coins** for **{self.item['name']}**.", color=discord.Color.red()), ephemeral=True)
             
         db["economy"][uid] -= self.item["price"]
-        if uid not in db["inventory"]: 
-            db["inventory"][uid] = []
+        if uid not in db["inventory"]: db["inventory"][uid] = []
         db["inventory"][uid].append(self.item["name"])
         save_db(db)
         
-        embed = discord.Embed(description=f"✅ **Transaction Successful!** You bought **{self.item['name']}**.", color=discord.Color.green())
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=discord.Embed(description=f"✅ **Purchased!** Added **{self.item['name']}** to your inventory.", color=discord.Color.green()), ephemeral=True)
 
 class DynamicShopView(discord.ui.View):
     def __init__(self, shop_items):
@@ -81,47 +128,50 @@ class AIBossFightView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user != self.ctx.author:
-            await interaction.response.send_message("❌ This is not your boss fight! Run `/bossfight` to start your own.", ephemeral=True)
+            await interaction.response.send_message("❌ Run `/bossfight` to spawn your own boss!", ephemeral=True)
             return False
         return True
 
     async def process_turn(self, interaction: discord.Interaction, action: str):
         await interaction.response.defer()
-        
         self.chat_history.append({
             "role": "user", 
-            "content": f"I choose to: {action}. Describe the outcome of my action, the boss's counter-attack, and the environment. Keep it under 100 words. At the very end of your response, output exactly '[CONTINUE]', '[WIN]', or '[LOSE]' so the system knows the battle state."
+            "content": f"I choose to: {action}. Describe the outcome of my action, the boss's counter-attack, and the environment. Keep it under 100 words. At the very end, output exactly '[CONTINUE]', '[WIN]', or '[LOSE]'."
         })
         
         try:
-            response = self.ai_client.chat.completions.create(
+            response = await self.ai_client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=self.chat_history
-            ).choices[0].message.content.strip()
+            )
+            reply = response.choices[0].message.content.strip()
         except Exception as e:
-            return await interaction.edit_original_response(content=f"❌ AI Dungeon Master disconnected: {e}")
+            return await interaction.edit_original_response(content=f"❌ Dungeon Master disconnected: {e}")
 
-        self.chat_history.append({"role": "assistant", "content": response})
+        self.chat_history.append({"role": "assistant", "content": reply})
 
-        if "[WIN]" in response.upper():
-            clean_text = response.replace("[WIN]", "").replace("[win]", "").strip()
-            reward = random.randint(500000, 2000000)
+        if "[WIN]" in reply.upper():
+            clean_text = reply.replace("[WIN]", "").replace("[win]", "").strip()
+            reward = random.randint(1000000, 5000000)
             db["economy"][str(self.ctx.author.id)] = db["economy"].get(str(self.ctx.author.id), 0) + reward
             save_db(db)
             
-            embed = discord.Embed(title="🏆 BOSS SLAIN!", description=f"{clean_text}\n\n**Rewards Claimed:** {reward:,} Coins!", color=discord.Color.gold())
+            embed = discord.Embed(title="🏆 BOSS SLAIN!", description=f"{clean_text}\n\n💰 **Rewards:** {reward:,} Coins!", color=discord.Color.gold())
+            embed.set_image(url="https://media1.tenor.com/m/6Z3aU2_7_8QAAAAd/anime-win.gif")
             for child in self.children: child.disabled = True
             await interaction.edit_original_response(embed=embed, view=self)
             
-        elif "[LOSE]" in response.upper():
-            clean_text = response.replace("[LOSE]", "").replace("[lose]", "").strip()
+        elif "[LOSE]" in reply.upper():
+            clean_text = reply.replace("[LOSE]", "").replace("[lose]", "").strip()
             embed = discord.Embed(title="💀 YOU DIED", description=clean_text, color=discord.Color.dark_red())
+            embed.set_image(url="https://media1.tenor.com/m/8Y_2v_3_45wAAAAd/anime-dead.gif")
             for child in self.children: child.disabled = True
             await interaction.edit_original_response(embed=embed, view=self)
             
         else:
-            clean_text = response.replace("[CONTINUE]", "").replace("[continue]", "").strip()
+            clean_text = reply.replace("[CONTINUE]", "").replace("[continue]", "").strip()
             embed = discord.Embed(title="⚔️ BOSS FIGHT CONTINUES", description=clean_text, color=discord.Color.dark_theme())
+            embed.set_image(url="https://media1.tenor.com/m/2Y4Z8v3_45wAAAAd/anime-fight.gif")
             await interaction.edit_original_response(embed=embed, view=self)
 
     @discord.ui.button(label="Attack 🗡️", style=discord.ButtonStyle.danger)
@@ -134,7 +184,7 @@ class AIBossFightView(discord.ui.View):
 
     @discord.ui.button(label="Defend 🛡️", style=discord.ButtonStyle.success)
     async def defend_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.process_turn(interaction, "Take a defensive stance to block the next attack and look for an opening.")
+        await self.process_turn(interaction, "Take a defensive stance to block the next attack.")
 
     @discord.ui.button(label="Flee 🏃", style=discord.ButtonStyle.secondary)
     async def run_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -142,36 +192,14 @@ class AIBossFightView(discord.ui.View):
         for child in self.children: child.disabled = True
         await interaction.response.edit_message(embed=embed, view=self)
 
-class MasterlistView(discord.ui.View):
-    def __init__(self, embeds):
-        super().__init__(timeout=120)
-        self.embeds = embeds
-        self.current_page = 0
-
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.primary, disabled=True)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_page -= 1
-        self.update_buttons()
-        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
-
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.primary)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_page += 1
-        self.update_buttons()
-        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
-
-    def update_buttons(self):
-        self.children[0].disabled = self.current_page == 0
-        self.children[1].disabled = self.current_page == len(self.embeds) - 1
-
 # ==========================================
-# CORE COG & LISTENERS
+# CORE COG, AUTO-LOOPS & LISTENERS
 # ==========================================
 class MasterCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
-        self.client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+        self.client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
         self.ai_event_loop.start()
         self.shop_refresh_loop.start()
 
@@ -179,12 +207,33 @@ class MasterCommands(commands.Cog):
         self.ai_event_loop.cancel()
         self.shop_refresh_loop.cancel()
 
-    def ask_groq(self, messages):
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        if isinstance(error, commands.CommandOnCooldown):
+            m, s = divmod(int(error.retry_after), 60)
+            h, m = divmod(m, 60)
+            time_left = f"{h}h {m}m {s}s" if h > 0 else f"{m}m {s}s"
+            embed = discord.Embed(description=f"⏳ **Hold up!** You are on cooldown. Try again in **{time_left}**.", color=discord.Color.red())
+            
+            if ctx.interaction and not ctx.interaction.response.is_done():
+                await ctx.interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await ctx.send(embed=embed, delete_after=10)
+        elif isinstance(error, commands.MissingPermissions):
+            embed = discord.Embed(description="❌ **You lack the permissions to use this command.**", color=discord.Color.red())
+            if ctx.interaction and not ctx.interaction.response.is_done():
+                await ctx.interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await ctx.send(embed=embed, delete_after=5)
+        else:
+            print(f"Ignored Error: {error}")
+
+    async def ask_groq(self, messages):
         if not self.client: 
             raise Exception("Groq API Key missing.")
         for model in ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"]:
             try: 
-                return self.client.chat.completions.create(model=model, messages=messages).choices[0].message.content.strip()
+                response = await self.client.chat.completions.create(model=model, messages=messages)
+                return response.choices[0].message.content.strip()
             except: 
                 continue 
         raise Exception("All AI models failed.")
@@ -202,21 +251,15 @@ class MasterCommands(commands.Cog):
             {"name": "Philosopher's Stone", "price": 15000000, "desc": "Equivalent exchange is a myth with this."}
         ]
         
-        new_shop = random.sample(master_items, 4)
-        db["current_shop"] = new_shop
+        db["current_shop"] = random.sample(master_items, 4)
         save_db(db)
         
-        if not self.client: 
-            return
-            
         channel_id = db["config"].get("event_channel")
-        if not channel_id: 
-            return
-            
-        channel = self.bot.get_channel(channel_id)
-        if channel:
-            embed = discord.Embed(title="🏪 THE MYSTIC SHOP HAS RESTOCKED", description="The traveling merchant has arrived with new legendary artifacts! Use `/shop` to view them.", color=discord.Color.magenta())
-            await channel.send(embed=embed)
+        if channel_id and self.client: 
+            channel = self.bot.get_channel(channel_id)
+            if channel:
+                embed = discord.Embed(title="🏪 THE MYSTIC SHOP HAS RESTOCKED", description="The traveling merchant has arrived with new legendary artifacts!\nUse `/shop` to view and interact with the store.", color=discord.Color.magenta())
+                await channel.send(embed=embed)
 
     @shop_refresh_loop.before_loop
     async def before_shop_loop(self): 
@@ -224,21 +267,16 @@ class MasterCommands(commands.Cog):
 
     @tasks.loop(minutes=60)
     async def ai_event_loop(self):
-        if not self.client: 
-            return
-            
         channel_id = db["config"].get("event_channel")
-        if not channel_id: 
-            return
-            
-        channel = self.bot.get_channel(channel_id)
-        if channel:
-            try: 
-                reply = self.ask_groq([{"role": "user", "content": "Generate a highly engaging, modern Discord event, hot take, or scenario to spark chat activity. Keep it short. Do not use JSON."}])
-                embed = discord.Embed(title="🌟 Server Event", description=reply, color=discord.Color.blurple())
-                await channel.send(embed=embed)
-            except: 
-                pass
+        if channel_id and self.client:
+            channel = self.bot.get_channel(channel_id)
+            if channel:
+                try: 
+                    reply = await self.ask_groq([{"role": "user", "content": "Generate a highly engaging, modern Discord event, hot take, or scenario to spark chat activity. Keep it short. Do not use JSON."}])
+                    embed = discord.Embed(title="🌟 Server Event", description=reply, color=discord.Color.blurple())
+                    await channel.send(embed=embed)
+                except: 
+                    pass
 
     @ai_event_loop.before_loop
     async def before_event_loop(self): 
@@ -247,10 +285,8 @@ class MasterCommands(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member):
         if db["config"].get("antiraid", False):
-            try: 
-                await member.kick(reason="Anti-Raid protection is currently active.")
-            except: 
-                pass
+            try: await member.kick(reason="Anti-Raid protection active.")
+            except: pass
 
     @commands.Cog.listener()
     async def on_message_delete(self, message):
@@ -264,96 +300,70 @@ class MasterCommands(commands.Cog):
     @commands.Cog.listener()
     async def on_message_edit(self, before, after):
         if not before.author.bot: 
-            edit_snipes[before.channel.id] = {
-                "before": before.content, 
-                "after": after.content, 
-                "author": before.author.name
-            }
+            edit_snipes[before.channel.id] = {"before": before.content, "after": after.content, "author": before.author.name}
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot: 
-            return
-            
+        if message.author.bot: return
         uid = str(message.author.id)
 
-        # 1. DM AI Chat Handler
         if not message.guild:
-            if not self.client: 
-                return
+            if not self.client: return
             async with message.channel.typing():
                 try: 
-                    reply = self.ask_groq([
+                    reply = await self.ask_groq([
                         {"role": "system", "content": "You are habbibi mod (:, a chaotic, funny Discord bot. You are talking in private DMs."}, 
                         {"role": "user", "content": message.content}
                     ])
-                    await message.channel.send(reply[:2000])
+                    await message.channel.send(embed=discord.Embed(description=reply[:2000], color=discord.Color.blurple()))
                 except Exception as e: 
-                    await message.channel.send(f"❌ AI Error: {e}")
+                    await message.channel.send(embed=discord.Embed(description=f"❌ AI Error: {e}", color=discord.Color.red()))
             return 
 
-        # 2. AFK System
         if uid in db["afk"]:
             del db["afk"][uid]
             save_db(db)
-            embed = discord.Embed(description=f"👋 Welcome back {message.author.mention}, I have removed your AFK status.", color=discord.Color.green())
-            await message.channel.send(embed=embed, delete_after=10)
+            await message.channel.send(embed=discord.Embed(description=f"👋 Welcome back {message.author.mention}, AFK removed.", color=discord.Color.green()), delete_after=10)
             
         for mention in message.mentions:
             if str(mention.id) in db["afk"]: 
-                embed = discord.Embed(description=f"💤 **{mention.name}** is currently AFK: {db['afk'][str(mention.id)]}", color=discord.Color.dark_grey())
-                await message.channel.send(embed=embed)
+                await message.channel.send(embed=discord.Embed(description=f"💤 **{mention.name}** is currently AFK: {db['afk'][str(mention.id)]}", color=discord.Color.dark_grey()))
 
-        # 3. Automod Filter
         for word in db["config"]["filterwords"]:
             if word in message.content.lower():
                 try:
                     await message.delete()
-                    embed = discord.Embed(description=f"⚠️ {message.author.mention}, that word is blacklisted!", color=discord.Color.red())
-                    await message.channel.send(embed=embed, delete_after=5)
-                except:
-                    pass
+                    await message.channel.send(embed=discord.Embed(description=f"⚠️ {message.author.mention}, that word is blacklisted!", color=discord.Color.red()), delete_after=5)
+                except: pass
                 return
 
-        # 4. RPG Leveling System
-        if uid not in db["levels"]: 
-            db["levels"][uid] = {"xp": 0, "level": 1}
-            
+        if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
         db["levels"][uid]["xp"] += random.randint(10, 25)
-        current_xp = db["levels"][uid]["xp"]
-        current_lvl = db["levels"][uid]["level"]
-        xp_needed = (current_lvl * 100) * 1.5
-        
-        if current_xp >= xp_needed and current_lvl < 13000:
+        if db["levels"][uid]["xp"] >= (db["levels"][uid]["level"] * 100) * 1.5 and db["levels"][uid]["level"] < 13000:
             db["levels"][uid]["level"] += 1
             save_db(db)
-            embed = discord.Embed(
-                title="Level Up!", 
-                description=f"🎉 **{message.author.mention}** has leveled up to **Level {db['levels'][uid]['level']}**!", 
-                color=discord.Color.gold()
-            )
-            await message.channel.send(embed=embed)
+            lvl_up = discord.Embed(title="Level Up!", description=f"🎉 **{message.author.mention}** leveled up to **Level {db['levels'][uid]['level']}**!", color=discord.Color.gold())
+            lvl_up.set_image(url="https://media1.tenor.com/m/7_3X2v2X14YAAAAd/anime-level-up.gif")
+            await message.channel.send(embed=lvl_up)
         else: 
             save_db(db)
 
-        # 5. Custom Commands
         if message.content.startswith('!') and len(message.content) > 1:
             cmd = message.content[1:].split()[0].lower()
             if cmd in db["custom_commands"]: 
-                return await message.channel.send(db["custom_commands"][cmd])
+                return await message.channel.send(embed=discord.Embed(description=db["custom_commands"][cmd], color=discord.Color.blue()))
 
-        # 6. Server AI Auto-Chat
-        ai_channel_id = db["config"].get("ai_channel")
-        if message.channel.id == ai_channel_id and not message.content.startswith(('!', '/')) and self.client:
+        ai_chan = db["config"].get("ai_channel")
+        if message.channel.id == ai_chan and not message.content.startswith(('!', '/')) and self.client:
             async with message.channel.typing():
                 try: 
-                    reply = self.ask_groq([
+                    reply = await self.ask_groq([
                         {"role": "system", "content": "You are habbibi mod (:, a chaotic and sarcastic Discord bot."}, 
                         {"role": "user", "content": message.content}
                     ])
-                    await message.channel.send(reply[:2000])
-                except: 
-                    pass
+                    await message.channel.send(embed=discord.Embed(description=reply[:2000], color=discord.Color.purple()))
+                except: pass
+
 
     # ==========================================
     # CONFIG & MASTERLIST
@@ -361,44 +371,53 @@ class MasterCommands(commands.Cog):
     @commands.hybrid_command(name="setaichannel", description="Sets the AI auto-reply channel.")
     @commands.has_permissions(administrator=True)
     async def setaichannel(self, ctx): 
-        db["config"]["ai_channel"] = ctx.channel.id
-        save_db(db)
+        db["config"]["ai_channel"] = ctx.channel.id; save_db(db)
         await ctx.send(embed=discord.Embed(description=f"🤖 **AI Auto-Chat bound to** {ctx.channel.mention}", color=discord.Color.green()))
 
-    @commands.hybrid_command(name="setcmdchannel", description="Locks normal commands to a channel.")
+    @commands.hybrid_command(name="setcmdchannel", description="Locks commands to a channel.")
     @commands.has_permissions(administrator=True)
     async def setcmdchannel(self, ctx): 
-        db["config"]["cmd_channel"] = ctx.channel.id
-        save_db(db)
+        db["config"]["cmd_channel"] = ctx.channel.id; save_db(db)
         await ctx.send(embed=discord.Embed(description=f"🔒 **Commands locked to** {ctx.channel.mention}", color=discord.Color.green()))
 
     @commands.hybrid_command(name="seteventchannel", description="Sets the hourly AI event channel.")
     @commands.has_permissions(administrator=True)
     async def seteventchannel(self, ctx): 
-        db["config"]["event_channel"] = ctx.channel.id
-        save_db(db)
+        db["config"]["event_channel"] = ctx.channel.id; save_db(db)
         await ctx.send(embed=discord.Embed(description=f"🌟 **AI Events bound to** {ctx.channel.mention}", color=discord.Color.green()))
+
+    @commands.hybrid_command(name="unsetchannel", description="Unbinds a specific bot channel (ai, cmd, event).")
+    @commands.has_permissions(administrator=True)
+    async def unsetchannel(self, ctx, channel_type: str):
+        valid_choices = {"ai": "ai_channel", "cmd": "cmd_channel", "event": "event_channel"}
+        choice = channel_type.lower()
+        if choice not in valid_choices:
+            return await ctx.send(embed=discord.Embed(description="❌ **Invalid choice.** Please use `ai`, `cmd`, or `event`.", color=discord.Color.red()))
+        
+        db["config"][valid_choices[choice]] = None
+        save_db(db)
+        await ctx.send(embed=discord.Embed(description=f"✅ **Successfully unbound the {choice.upper()} channel.**", color=discord.Color.green()))
 
     @commands.hybrid_command(name="deployserver", description="Wipes the server and builds a Modern Layout.")
     @commands.has_permissions(administrator=True)
     async def deployserver(self, ctx):
-        await ctx.send(embed=discord.Embed(description="⚠️ **CLEAN SLATE PROTOCOL INITIATED.** Wiping the server and building the new layout...", color=discord.Color.orange()))
+        view = ConfirmView(ctx)
+        msg = await ctx.send(embed=discord.Embed(title="⚠️ CLEAN SLATE PROTOCOL", description="Are you absolutely sure you want to WIPE the server and rebuild the layout?", color=discord.Color.red()), view=view)
+        await view.wait()
+        if not view.value: 
+            return await msg.edit(embed=discord.Embed(description="🛑 Deployment Cancelled.", color=discord.Color.grey()), view=None)
+
+        await msg.edit(embed=discord.Embed(description="⚙️ Wiping channels and roles...", color=discord.Color.orange()), view=None)
         guild = ctx.guild
-        
         for c in guild.channels:
             try: await c.delete(); await asyncio.sleep(0.5)
             except: pass
-                
         for r in guild.roles:
             if r.name != "@everyone" and not r.managed and r < ctx.guild.me.top_role:
                 try: await r.delete(); await asyncio.sleep(0.5)
                 except: pass
                     
-        roles_to_make = [
-            {"name": "Admin", "color": discord.Color.red()}, 
-            {"name": "Moderator", "color": discord.Color.orange()}, 
-            {"name": "Jailed", "color": discord.Color.dark_grey()}
-        ]
+        roles_to_make = [{"name": "Admin", "color": discord.Color.red()}, {"name": "Moderator", "color": discord.Color.orange()}, {"name": "Jailed", "color": discord.Color.dark_grey()}]
         created_roles = {}
         for r in roles_to_make:
             try: 
@@ -407,19 +426,15 @@ class MasterCommands(commands.Cog):
                 await asyncio.sleep(1)
             except: pass
                 
-        try: 
-            if "Admin" in created_roles:
-                await ctx.author.add_roles(created_roles["Admin"])
+        try: await ctx.author.add_roles(created_roles.get("Admin"))
         except: pass
 
         cat_info = await guild.create_category("📌 INFORMATION")
         await guild.create_text_channel("rules", category=cat_info)
-        
         cat_chat = await guild.create_category("💬 CHAT")
         gen_chat = await guild.create_text_channel("general", category=cat_chat)
         bot_cmds = await guild.create_text_channel("bot-commands", category=cat_chat)
         ai_chat = await guild.create_text_channel("talk-to-ai", category=cat_chat)
-        
         cat_voice = await guild.create_category("🔊 VOICE")
         await guild.create_voice_channel("General VC", category=cat_voice)
 
@@ -433,12 +448,11 @@ class MasterCommands(commands.Cog):
         db["config"]["event_channel"] = gen_chat.id
         save_db(db)
         
-        await gen_chat.send(f"{ctx.author.mention} ✅ **Deployment Complete.**")
+        await gen_chat.send(embed=discord.Embed(title="✅ Deployment Complete", description=f"{ctx.author.mention}, the server is fully operational.", color=discord.Color.green()))
 
     @commands.hybrid_command(name="masterlist", description="View all bot commands in an interactive panel.")
     async def masterlist(self, ctx):
         embeds = []
-        
         e1 = discord.Embed(title="🤖 Masterlist: AI & Setup (Page 1/4)", color=discord.Color.blue())
         e1.add_field(name="/deployserver", value="Wipes and builds a modern server layout.", inline=False)
         e1.add_field(name="/aicommand", value="God-Mode AI python executor.", inline=False)
@@ -470,7 +484,7 @@ class MasterCommands(commands.Cog):
         e4.add_field(name="!susmeter & !simpmeter", value="Rate users.", inline=False)
         embeds.append(e4)
 
-        view = MasterlistView(embeds)
+        view = PaginationView(ctx, embeds)
         await ctx.send(embed=embeds[0], view=view)
 
     # ==========================================
@@ -481,53 +495,38 @@ class MasterCommands(commands.Cog):
     async def aicommand(self, ctx, *, instruction: str):
         if not self.client: 
             return await ctx.send(embed=discord.Embed(description="🤖 **AI is offline.**", color=discord.Color.red()))
-        
         await ctx.defer()
-        prompt = f"""
-        You are an omnipotent Discord bot. The server owner has commanded: "{instruction}"
-        Output a JSON array of actions to perform. 
-        Available Actions:
-        1. Reply: {{"action": "reply", "message": "your text here"}}
-        2. Execute Python: {{"action": "execute", "code": "await ctx.send('Task complete!')"}}
-        STRICT RULES: Output ONLY a valid JSON array. Write valid discord.py async code.
-        """
+        prompt = f"""You are an omnipotent Discord bot. The server owner has commanded: "{instruction}"
+        Output a JSON array of actions: 1. Reply: {{"action": "reply", "message": "text"}} 2. Execute Python: {{"action": "execute", "code": "await ctx.send('Task complete!')"}}
+        STRICT RULES: Output ONLY a valid JSON array. Write valid discord.py async code."""
         
         try:
-            raw_response = self.ask_groq([{"role": "user", "content": prompt}])
+            raw_response = await self.ask_groq([{"role": "user", "content": prompt}])
             start_idx = raw_response.find('[')
             end_idx = raw_response.rfind(']')
-            
-            if start_idx != -1 and end_idx != -1:
-                clean_json = raw_response[start_idx:end_idx+1]
-            else:
-                clean_json = raw_response.replace('```json', '').replace('```python', '').replace('```', '').strip()
-                if clean_json.startswith('{'): 
-                    clean_json = f"[{clean_json}]"
+            clean_json = raw_response[start_idx:end_idx+1] if start_idx != -1 else raw_response.replace('```json', '').replace('```python', '').replace('```', '').strip()
+            if clean_json.startswith('{'): clean_json = f"[{clean_json}]"
                     
             actions = json.loads(clean_json)
-            
             for act in actions:
-                atype = act.get("action")
-                if atype == "reply": 
-                    await ctx.send(f"🤖 {act.get('message')}")
-                elif atype == "execute":
-                    status_msg = await ctx.send("⚡ **Executing dynamic Python code...**")
+                if act.get("action") == "reply": 
+                    await ctx.send(embed=discord.Embed(description=f"🤖 {act.get('message')}", color=discord.Color.blurple()))
+                elif act.get("action") == "execute":
+                    status_msg = await ctx.send(embed=discord.Embed(description="⚡ **Executing dynamic Python code...**", color=discord.Color.orange()))
                     try:
                         code_lines = act.get("code", "").split("\n")
                         wrapped_code = "async def __ai_exec():\n"
-                        for line in code_lines:
-                            wrapped_code += f"    {line}\n"
-                            
+                        for line in code_lines: wrapped_code += f"    {line}\n"
                         exec_env = {'discord': discord, 'bot': self.bot, 'ctx': ctx, 'asyncio': asyncio, 'db': db}
                         exec(wrapped_code, exec_env)
                         await exec_env['__ai_exec']()
-                        await status_msg.edit(content="✅ **AI Code Execution Successful!**")
+                        await status_msg.edit(embed=discord.Embed(description="✅ **AI Code Execution Successful!**", color=discord.Color.green()))
                     except Exception as err: 
-                        await status_msg.edit(content=f"⚠️ **AI Execution Failed:**\n```py\n{err}\n```")
+                        await status_msg.edit(embed=discord.Embed(description=f"⚠️ **AI Execution Failed:**\n```py\n{err}\n```", color=discord.Color.red()))
         except Exception as e: 
-            await ctx.send(f"❌ **Error parsing AI response:** {e}")
+            await ctx.send(embed=discord.Embed(description=f"❌ **Error parsing AI response:** {e}", color=discord.Color.red()))
 
-    @commands.hybrid_command(name="bossfight", description="Start an interactive UI Boss Fight.")
+    @commands.hybrid_command(name="bossfight", description="Start an interactive UI Boss Fight powered by AI.")
     async def bossfight(self, ctx):
         if not self.client: 
             return await ctx.send(embed=discord.Embed(description="❌ AI is offline. The Dungeon Master is sleeping.", color=discord.Color.red()))
@@ -540,13 +539,14 @@ class MasterCommands(commands.Cog):
         ]
         
         try:
-            scenario = self.client.chat.completions.create(model="llama-3.3-70b-versatile", messages=chat_history).choices[0].message.content.strip()
+            scenario = await self.ask_groq(chat_history)
         except:
-            return await ctx.send("❌ Failed to connect to AI Dungeon Master.")
+            return await ctx.send(embed=discord.Embed(description="❌ Failed to connect to AI Dungeon Master.", color=discord.Color.red()))
 
         chat_history.append({"role": "assistant", "content": scenario})
         view = AIBossFightView(ctx, self.client, chat_history)
         embed = discord.Embed(title="⚔️ BOSS ENCOUNTER", description=scenario, color=discord.Color.dark_red())
+        embed.set_image(url="[https://media1.tenor.com/m/ZzR7vT1wS4gAAAAd/anime-fight.gif](https://media1.tenor.com/m/ZzR7vT1wS4gAAAAd/anime-fight.gif)")
         embed.set_footer(text="Choose your action below...")
         await ctx.send(embed=embed, view=view)
 
@@ -554,87 +554,65 @@ class MasterCommands(commands.Cog):
     async def define(self, ctx, word: str): 
         if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": f"Give a precise dictionary definition for the word: '{word}'"}])
+        reply = await self.ask_groq([{"role": "user", "content": f"Give a precise dictionary definition for the word: '{word}'"}])
         await ctx.send(embed=discord.Embed(title=f"📖 Definition: {word.title()}", description=reply, color=discord.Color.dark_blue()))
 
     @commands.hybrid_command(name="urban", description="AI powered Urban Dictionary.")
     async def urban(self, ctx, word: str): 
         if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": f"Give an internet slang 'Urban Dictionary' style definition for: '{word}'. Safe for work."}])
+        reply = await self.ask_groq([{"role": "user", "content": f"Give an internet slang 'Urban Dictionary' style definition for: '{word}'. Safe for work."}])
         await ctx.send(embed=discord.Embed(title=f"🏙️ Urban Dictionary: {word.title()}", description=reply, color=discord.Color.dark_green()))
 
     @commands.hybrid_command(name="forceevent", description="Force an hourly AI event instantly.")
     @commands.has_permissions(administrator=True)
     async def forceevent(self, ctx): 
-        if not self.client: return await ctx.send("AI is offline.")
+        if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI is offline.", color=discord.Color.red()))
         await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": "Generate a modern Discord event or question to spark chat."}])
+        reply = await self.ask_groq([{"role": "user", "content": "Generate a modern Discord event or question to spark chat."}])
         await ctx.send(embed=discord.Embed(title="🌟 Forced Server Event", description=reply, color=discord.Color.blurple()))
 
     @commands.hybrid_command(name="tldr", description="AI summarizes the last 50 messages.")
     async def tldr(self, ctx): 
-        if not self.client: return await ctx.send("AI offline.")
+        if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
         chat_log = "\n".join([m.content async for m in ctx.channel.history(limit=50) if m.content])
-        reply = self.ask_groq([{"role": "user", "content": f"Summarize this chat log briefly:\n{chat_log}"}])
+        reply = await self.ask_groq([{"role": "user", "content": f"Summarize this chat log briefly:\n{chat_log}"}])
         await ctx.send(embed=discord.Embed(title="📜 Chat TL;DR", description=reply, color=discord.Color.light_grey()))
 
     @commands.hybrid_command(name="roast_history", description="AI roasts a user based on their recent messages.")
     async def roast_history(self, ctx, member: discord.Member): 
-        if not self.client: return await ctx.send("AI offline.")
+        if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
         chat_log = "\n".join([m.content async for m in ctx.channel.history(limit=25) if m.author == member and m.content])
-        if not chat_log: return await ctx.send(f"I don't have enough recent messages from {member.name}.")
-        reply = self.ask_groq([{"role": "user", "content": f"Brutally roast this user based strictly on their message history:\n{chat_log}"}])
+        if not chat_log: return await ctx.send(embed=discord.Embed(description=f"I don't have enough recent messages from {member.name}.", color=discord.Color.red()))
+        reply = await self.ask_groq([{"role": "user", "content": f"Brutally roast this user based strictly on their message history:\n{chat_log}"}])
         await ctx.send(embed=discord.Embed(title=f"🔥 AI Roast for {member.name}", description=reply, color=discord.Color.dark_orange()))
 
     @commands.hybrid_command(name="gothic_translate", description="Translates text into dark fantasy royal decree.")
     async def gothic_translate(self, ctx, *, text: str): 
-        if not self.client: return await ctx.send("AI offline.")
+        if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": f"Rewrite the following text into dark, brooding gothic royal decree:\n{text}"}])
+        reply = await self.ask_groq([{"role": "user", "content": f"Rewrite the following text into dark, brooding gothic royal decree:\n{text}"}])
         await ctx.send(embed=discord.Embed(title="🦇 Gothic Translation", description=reply, color=discord.Color.purple()))
 
     @commands.hybrid_command(name="lore", description="AI generates an epic backstory for the server.")
     async def lore(self, ctx): 
-        if not self.client: return await ctx.send("AI offline.")
+        if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": f"Write an epic dark fantasy backstory for the Discord server named {ctx.guild.name}."}])
+        reply = await self.ask_groq([{"role": "user", "content": f"Write an epic dark fantasy backstory for the Discord server named {ctx.guild.name}."}])
         await ctx.send(embed=discord.Embed(title="📖 Server Lore", description=reply, color=discord.Color.dark_theme()))
-
-    @commands.hybrid_command(name="code_fix", description="AI explains and fixes broken code.")
-    async def code_fix(self, ctx, *, code: str): 
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": f"Fix this code and briefly explain the issue:\n{code}"}])
-        await ctx.send(embed=discord.Embed(title="🛠️ Code Fix", description=reply, color=discord.Color.green()))
-
-    @commands.hybrid_command(name="name_idea", description="AI suggests Discord role/server names.")
-    async def name_idea(self, ctx): 
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": "Give me 5 incredibly cool dark fantasy or sci-fi Discord role names."}])
-        await ctx.send(embed=discord.Embed(title="💡 Name Ideas", description=reply, color=discord.Color.teal()))
-
-    @commands.hybrid_command(name="vibecheck", description="AI analyzes a user's vibe.")
-    async def vibecheck(self, ctx, member: discord.Member): 
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        chat_log = "\n".join([m.content async for m in ctx.channel.history(limit=25) if m.author == member and m.content])
-        if not chat_log: return await ctx.send("No recent messages to check.")
-        reply = self.ask_groq([{"role": "user", "content": f"Humorously analyze the vibe of this user based on their texts:\n{chat_log}"}])
-        await ctx.send(embed=discord.Embed(title=f"🔮 Vibe Check: {member.name}", description=reply, color=discord.Color.magenta()))
 
     @commands.hybrid_command(name="debate", description="AI will argue against your topic.")
     async def debate(self, ctx, *, topic: str): 
-        if not self.client: return await ctx.send("AI offline.")
+        if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
-        reply = self.ask_groq([
+        reply = await self.ask_groq([
             {"role": "system", "content": "You are a master debater. Take the opposite stance of the user and passionately argue against them."}, 
             {"role": "user", "content": topic}
         ])
         await ctx.send(embed=discord.Embed(title=f"⚖️ Debating: {topic}", description=reply, color=discord.Color.dark_grey()))
+
 
     # ==========================================
     # ADVANCED MODERATION
@@ -643,8 +621,7 @@ class MasterCommands(commands.Cog):
     @commands.has_permissions(ban_members=True)
     async def tempban(self, ctx, member: discord.Member, days: int, *, reason: str="Temp Ban"): 
         await member.ban(reason=reason)
-        embed = discord.Embed(title="🔨 User Temp-Banned", description=f"**{member.name}** has been banned for {days} days.\nReason: {reason}", color=discord.Color.red())
-        await ctx.send(embed=embed)
+        await ctx.send(embed=discord.Embed(title="🔨 User Temp-Banned", description=f"**{member.name}** has been banned for {days} days.\nReason: {reason}", color=discord.Color.red()))
         await asyncio.sleep(days * 86400)
         await ctx.guild.unban(member, reason="Tempban expired automatically.")
 
@@ -652,8 +629,7 @@ class MasterCommands(commands.Cog):
     @commands.has_permissions(moderate_members=True)
     async def tempmute(self, ctx, member: discord.Member, minutes: int, *, reason: str="Temp Mute"): 
         await member.timeout(timedelta(minutes=minutes), reason=reason)
-        embed = discord.Embed(title="🔇 User Muted", description=f"**{member.name}** has been timed out for {minutes} minutes.\nReason: {reason}", color=discord.Color.orange())
-        await ctx.send(embed=embed)
+        await ctx.send(embed=discord.Embed(title="🔇 User Muted", description=f"**{member.name}** has been timed out for {minutes} minutes.\nReason: {reason}", color=discord.Color.orange()))
 
     @commands.hybrid_command(name="slowmode", description="Sets slowmode for the current channel.")
     @commands.has_permissions(manage_channels=True)
@@ -700,100 +676,34 @@ class MasterCommands(commands.Cog):
         embed.add_field(name="After", value=data["after"], inline=False)
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="massnick", description="Changes everyone's nickname.")
-    @commands.has_permissions(administrator=True)
-    async def massnick(self, ctx, *, nickname: str):
-        await ctx.send(embed=discord.Embed(description=f"🔄 **Changing all nicknames to '{nickname}'...** This may take a while.", color=discord.Color.blurple()))
-        count = 0
-        for m in ctx.guild.members:
-            if not m.bot and m < ctx.guild.me.top_role:
-                try: 
-                    await m.edit(nick=nickname)
-                    count += 1
-                    await asyncio.sleep(0.5)
-                except: pass
-        await ctx.send(embed=discord.Embed(description=f"✅ **Massnick complete.** Changed {count} nicknames.", color=discord.Color.green()))
-
-    @commands.hybrid_command(name="strip", description="Removes all roles from a user.")
-    @commands.has_permissions(administrator=True)
-    async def strip(self, ctx, member: discord.Member):
-        for r in member.roles[1:]:
-            try: await member.remove_roles(r)
-            except: pass
-        await ctx.send(embed=discord.Embed(description=f"👕 **Stripped {member.name} of all roles.**", color=discord.Color.dark_grey()))
-
-    @commands.hybrid_command(name="roleall", description="Gives a specific role to everyone.")
-    @commands.has_permissions(administrator=True)
-    async def roleall(self, ctx, role: discord.Role):
-        await ctx.send(embed=discord.Embed(description=f"🔄 **Granting {role.name} to everyone...**", color=discord.Color.blurple()))
-        count = 0
-        for m in ctx.guild.members:
-            if not m.bot:
-                try: 
-                    await m.add_roles(role)
-                    count += 1
-                    await asyncio.sleep(0.5)
-                except: pass
-        await ctx.send(embed=discord.Embed(description=f"✅ **Role granted to {count} members.**", color=discord.Color.green()))
-
-    @commands.hybrid_command(name="vckick", description="Disconnects a user from a voice channel.")
-    @commands.has_permissions(move_members=True)
-    async def vckick(self, ctx, member: discord.Member): 
-        if member.voice:
-            await member.move_to(None)
-            await ctx.send(embed=discord.Embed(description=f"👢 **Kicked {member.name} from Voice Chat.**", color=discord.Color.red()))
-        else:
-            await ctx.send(embed=discord.Embed(description="User is not in a voice channel.", color=discord.Color.red()))
-
-    @commands.hybrid_command(name="vcmute", description="Server-mutes a user in VC.")
-    @commands.has_permissions(mute_members=True)
-    async def vcmute(self, ctx, member: discord.Member): 
-        if member.voice:
-            await member.edit(mute=True)
-            await ctx.send(embed=discord.Embed(description=f"🔇 **Server-muted {member.name} in Voice Chat.**", color=discord.Color.orange()))
-        else:
-            await ctx.send(embed=discord.Embed(description="User is not in a voice channel.", color=discord.Color.red()))
-
-    @commands.hybrid_command(name="audit", description="Pulls a list of moderation actions on a user.")
-    @commands.has_permissions(administrator=True)
-    async def audit(self, ctx, member: discord.Member): 
-        logs = [e async for e in ctx.guild.audit_logs(limit=10, user=member)]
-        if not logs: 
-            return await ctx.send(embed=discord.Embed(description=f"No recent audit log actions found for {member.name}.", color=discord.Color.dark_grey()))
-        
-        res = "```\n--- Recent Audit Actions ---\n"
-        for e in logs:
-            res += f"- {e.action} on {e.target} at {e.created_at.strftime('%Y-%m-%d %H:%M')}\n"
-        res += "```"
-        await ctx.send(res)
-
-    @commands.hybrid_command(name="antiraid", description="Toggles anti-raid mode (auto-kicks new joins).")
-    @commands.has_permissions(administrator=True)
-    async def antiraid(self, ctx, status: bool): 
-        db["config"]["antiraid"] = status
-        save_db(db)
-        await ctx.send(embed=discord.Embed(description=f"🛡️ **Anti-raid mode is now {'ON' if status else 'OFF'}.**", color=discord.Color.blue()))
-
-    @commands.hybrid_command(name="hidechannel", description="Makes current channel invisible.")
-    @commands.has_permissions(manage_channels=True)
-    async def hidechannel(self, ctx): 
-        await ctx.channel.set_permissions(ctx.guild.default_role, view_channel=False)
-        await ctx.send(embed=discord.Embed(description="👻 **Channel is now hidden from regular members.**", color=discord.Color.dark_grey()))
-
     @commands.hybrid_command(name="purge", description="Deletes multiple messages.")
     @commands.has_permissions(manage_messages=True)
     async def purge(self, ctx, amount: int): 
+        view = ConfirmView(ctx)
+        msg = await ctx.send(embed=discord.Embed(description=f"⚠️ Are you sure you want to delete {amount} messages?", color=discord.Color.orange()), view=view)
+        await view.wait()
+        if not view.value: 
+            return await msg.edit(embed=discord.Embed(description="🛑 Purge Cancelled.", color=discord.Color.grey()), view=None)
         await ctx.channel.purge(limit=amount + 1)
         await ctx.send(embed=discord.Embed(description=f"🧹 **Swept {amount} messages.**", color=discord.Color.green()), delete_after=4)
 
     @commands.hybrid_command(name="nuke", description="Clones and deletes the channel.")
     @commands.has_permissions(administrator=True)
     async def nuke(self, ctx): 
+        view = ConfirmView(ctx)
+        msg = await ctx.send(embed=discord.Embed(title="☢️ TACTICAL NUKE", description="Are you absolutely sure you want to nuke this channel? It cannot be undone.", color=discord.Color.red()), view=view)
+        await view.wait()
+        if not view.value: 
+            return await msg.edit(embed=discord.Embed(description="🛑 Nuke Cancelled.", color=discord.Color.grey()), view=None)
+        
         pos = ctx.channel.position
         nc = await ctx.channel.clone()
         await ctx.channel.delete()
         await nc.edit(position=pos)
-        await nc.send("☢️ **TACTICAL NUKE INCOMING!** 💥\nChannel has been wiped.")
+        
+        embed = discord.Embed(description="☢️ **TACTICAL NUKE DEPLOYED!** 💥\nChannel has been wiped.", color=discord.Color.dark_red())
+        embed.set_image(url="[https://media1.tenor.com/m/1_bY-sZ_4nQAAAAd/nuke.gif](https://media1.tenor.com/m/1_bY-sZ_4nQAAAAd/nuke.gif)")
+        await nc.send(embed=embed)
 
     @commands.hybrid_command(name="kick", description="Kicks a user.")
     @commands.has_permissions(kick_members=True)
@@ -806,16 +716,6 @@ class MasterCommands(commands.Cog):
     async def ban(self, ctx, member: discord.Member, *, reason: str="Banned by Admin"): 
         await member.ban(reason=reason)
         await ctx.send(embed=discord.Embed(description=f"🔨 **{member.name} has been permanently banned.**", color=discord.Color.dark_red()))
-
-    @commands.hybrid_command(name="unban", description="Unbans a user by ID.")
-    @commands.has_permissions(ban_members=True)
-    async def unban(self, ctx, user_id: str): 
-        try:
-            user = await self.bot.fetch_user(int(user_id))
-            await ctx.guild.unban(user)
-            await ctx.send(embed=discord.Embed(description=f"🕊️ **{user.name} has been unbanned.**", color=discord.Color.green()))
-        except:
-            await ctx.send(embed=discord.Embed(description="❌ Could not find or unban that user ID.", color=discord.Color.red()))
 
     @commands.hybrid_command(name="warn", description="Warns a user.")
     @commands.has_permissions(kick_members=True)
@@ -839,24 +739,18 @@ class MasterCommands(commands.Cog):
     @commands.hybrid_command(name="clearwarns", description="Clears all warnings for a user.")
     @commands.has_permissions(administrator=True)
     async def clearwarns(self, ctx, member: discord.Member): 
+        view = ConfirmView(ctx)
+        msg = await ctx.send(embed=discord.Embed(description=f"⚠️ Are you sure you want to clear all warnings for {member.name}?", color=discord.Color.orange()), view=view)
+        await view.wait()
+        if not view.value: 
+            return await msg.edit(embed=discord.Embed(description="🛑 Cancelled.", color=discord.Color.grey()), view=None)
+        
         if str(member.id) in db["warns"]:
             del db["warns"][str(member.id)]
             save_db(db)
-            await ctx.send(embed=discord.Embed(description=f"🗑️ **Cleared all warnings for {member.name}.**", color=discord.Color.green()))
+            await msg.edit(embed=discord.Embed(description=f"🗑️ **Cleared all warnings for {member.name}.**", color=discord.Color.green()), view=None)
         else:
-            await ctx.send(embed=discord.Embed(description="User has no warnings.", color=discord.Color.grey()))
-
-    @commands.hybrid_command(name="lock", description="Locks current channel.")
-    @commands.has_permissions(manage_channels=True)
-    async def lock(self, ctx): 
-        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
-        await ctx.send(embed=discord.Embed(description="🔒 **Channel locked.**", color=discord.Color.red()))
-
-    @commands.hybrid_command(name="unlock", description="Unlocks current channel.")
-    @commands.has_permissions(manage_channels=True)
-    async def unlock(self, ctx): 
-        await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
-        await ctx.send(embed=discord.Embed(description="🔓 **Channel unlocked.**", color=discord.Color.green()))
+            await msg.edit(embed=discord.Embed(description="User has no warnings.", color=discord.Color.grey()), view=None)
 
     @commands.hybrid_command(name="jail", description="Strips roles and locks user in jail.")
     @commands.has_permissions(administrator=True)
@@ -872,7 +766,7 @@ class MasterCommands(commands.Cog):
             await member.add_roles(jail_role)
             await ctx.send(embed=discord.Embed(description=f"⛓️ **{member.mention} has been locked up in federal prison.**", color=discord.Color.dark_grey()))
         else:
-            await ctx.send("⚠️ 'Jailed' role does not exist. Please run `/deployserver` or create it.")
+            await ctx.send(embed=discord.Embed(description="⚠️ 'Jailed' role does not exist. Please run `/deployserver` or create it.", color=discord.Color.red()))
 
     @commands.hybrid_command(name="unjail", description="Releases user from jail and restores roles.")
     @commands.has_permissions(administrator=True)
@@ -892,7 +786,7 @@ class MasterCommands(commands.Cog):
         await ctx.send(embed=discord.Embed(description=f"🔓 **{member.mention} made bail and is released.**", color=discord.Color.green()))
 
     # ==========================================
-    # RPG & ECONOMY (The Grind)
+    # RPG, ECONOMY & ANIMATED GIF EVENTS
     # ==========================================
     @commands.hybrid_command(name="shop", description="View the interactive rotating Legendary Shop.")
     async def shop(self, ctx): 
@@ -911,8 +805,17 @@ class MasterCommands(commands.Cog):
     async def inventory(self, ctx): 
         uid = str(ctx.author.id)
         items = db.get("inventory", {}).get(uid, [])
-        embed = discord.Embed(title=f"🎒 {ctx.author.name}'s Relics", description="\n".join([f"- {i}" for i in items]) if items else "Inventory is empty.", color=discord.Color.blue())
-        await ctx.send(embed=embed)
+        if not items:
+            return await ctx.send(embed=discord.Embed(title=f"🎒 {ctx.author.name}'s Relics", description="Inventory is empty.", color=discord.Color.blue()))
+
+        chunks = [items[i:i + 10] for i in range(0, len(items), 10)]
+        embeds = []
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(title=f"🎒 {ctx.author.name}'s Relics (Page {i+1}/{len(chunks)})", description="\n".join([f"- {item}" for item in chunk]), color=discord.Color.blue())
+            embeds.append(embed)
+            
+        view = PaginationView(ctx, embeds)
+        await ctx.send(embed=embeds[0], view=view)
 
     @commands.hybrid_command(name="bal", description="Check your coin balance.")
     async def bal(self, ctx, member: discord.Member = None): 
@@ -943,7 +846,9 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         db["economy"][uid] = db["economy"].get(uid, 0) + earned
         save_db(db)
-        await ctx.send(embed=discord.Embed(description=f"💼 **You worked a grueling shift and earned {earned:,} coins!**", color=discord.Color.green()))
+        embed = discord.Embed(description=f"💼 **You worked a grueling shift and earned {earned:,} coins!**", color=discord.Color.green())
+        embed.set_image(url="[https://media1.tenor.com/m/3_4X3Y0_45wAAAAd/anime-work.gif](https://media1.tenor.com/m/3_4X3Y0_45wAAAAd/anime-work.gif)")
+        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="crime", description="Commit a crime for coins (risky).")
     @commands.cooldown(1, 3600, commands.BucketType.user)
@@ -952,12 +857,15 @@ class MasterCommands(commands.Cog):
         if random.choice([True, False]): 
             earned = random.randint(100000, 400000)
             db["economy"][uid] = db["economy"].get(uid, 0) + earned
-            await ctx.send(embed=discord.Embed(description=f"🥷 **You hacked the mainframe and stole {earned:,} coins!**", color=discord.Color.purple()))
+            embed = discord.Embed(description=f"🥷 **You hacked the mainframe and stole {earned:,} coins!**", color=discord.Color.purple())
+            embed.set_image(url="[https://media1.tenor.com/m/2XyX9C4kG0QAAAAd/anime-thief.gif](https://media1.tenor.com/m/2XyX9C4kG0QAAAAd/anime-thief.gif)")
         else: 
             lost = random.randint(50000, 150000)
             db["economy"][uid] = max(0, db["economy"].get(uid, 0) - lost)
-            await ctx.send(embed=discord.Embed(description=f"🚓 **The feds caught you! You paid a fine of {lost:,} coins.**", color=discord.Color.red()))
+            embed = discord.Embed(description=f"🚓 **The feds caught you! Batman arrived. You paid a fine of {lost:,} coins.**", color=discord.Color.red())
+            embed.set_image(url="[https://media1.tenor.com/m/X6o2gV1kO18AAAAd/batman-the-batman.gif](https://media1.tenor.com/m/X6o2gV1kO18AAAAd/batman-the-batman.gif)")
         save_db(db)
+        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="rob", description="Steal from another user.")
     @commands.cooldown(1, 7200, commands.BucketType.user)
@@ -971,12 +879,15 @@ class MasterCommands(commands.Cog):
             stolen = random.randint(50000, int(db["economy"][tid] * 0.25))
             db["economy"][tid] -= stolen
             db["economy"][uid] = db["economy"].get(uid, 0) + stolen
-            await ctx.send(embed=discord.Embed(description=f"🔫 **You mugged {member.name} and stole {stolen:,} coins!**", color=discord.Color.green()))
+            embed = discord.Embed(description=f"🔫 **You mugged {member.name} and stole {stolen:,} coins!**", color=discord.Color.green())
+            embed.set_image(url="[https://media1.tenor.com/m/ZzR7vT1wS4gAAAAd/anime-steal.gif](https://media1.tenor.com/m/ZzR7vT1wS4gAAAAd/anime-steal.gif)")
         else: 
             fine = 100000
             db["economy"][uid] = max(0, db["economy"].get(uid, 0) - fine)
-            await ctx.send(embed=discord.Embed(description=f"🛡️ **{member.name} fought back! You paid a {fine:,} coin hospital bill.**", color=discord.Color.dark_red()))
+            embed = discord.Embed(description=f"🛡️ **{member.name} fought back! You paid a {fine:,} coin hospital bill.**", color=discord.Color.dark_red())
+            embed.set_image(url="[https://media1.tenor.com/m/2Y4Z8v3_45wAAAAd/anime-slap.gif](https://media1.tenor.com/m/2Y4Z8v3_45wAAAAd/anime-slap.gif)")
         save_db(db)
+        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="heist", description="Start a bank heist event.")
     @commands.cooldown(1, 14400, commands.BucketType.guild)
@@ -984,33 +895,53 @@ class MasterCommands(commands.Cog):
         payout = random.randint(1000000, 5000000)
         db["economy"][str(ctx.author.id)] = db["economy"].get(str(ctx.author.id), 0) + payout
         save_db(db)
-        await ctx.send(embed=discord.Embed(title="🏦 BANK HEIST SUCCESSFUL!", description=f"You blew the vault and escaped with **{payout:,} coins!**", color=discord.Color.gold()))
+        embed = discord.Embed(title="🏦 BANK HEIST SUCCESSFUL!", description=f"You blew the vault and escaped with **{payout:,} coins!**", color=discord.Color.gold())
+        embed.set_image(url="[https://media1.tenor.com/m/1_bY-sZ_4nQAAAAd/money-heist.gif](https://media1.tenor.com/m/1_bY-sZ_4nQAAAAd/money-heist.gif)")
+        await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="slots", description="Virtual slot machine for millionaires.")
+    @commands.hybrid_command(name="slots", description="Animated virtual slot machine for millionaires.")
     async def slots(self, ctx, bet: int):
         uid = str(ctx.author.id)
-        if db["economy"].get(uid, 0) < bet or bet <= 0: 
-            return await ctx.send(embed=discord.Embed(description="❌ **You don't have enough coins to place that bet.**", color=discord.Color.red()))
+        
+        if bet < 100:
+            return await ctx.send(embed=discord.Embed(description="❌ **Minimum bet is 100 coins.**", color=discord.Color.red()))
+        if db["economy"].get(uid, 0) < bet: 
+            return await ctx.send(embed=discord.Embed(description=f"❌ **You don't have enough coins. You need {bet:,}.**", color=discord.Color.red()))
             
         db["economy"][uid] -= bet
-        reels = ["🍒", "🍋", "💎", "⭐", "🔔"]
-        r1, r2, r3 = random.choice(reels), random.choice(reels), random.choice(reels)
+        save_db(db)
         
-        msg = f"🎰 **SLOTS** 🎰\n| {r1} | {r2} | {r3} |\n\n"
+        embed = discord.Embed(title="🎰 SLOTS 🎰", description="**Spinning the reels...**\nGood luck!", color=discord.Color.dark_theme())
+        embed.set_image(url="[https://media1.tenor.com/m/x8v1oNUOmg4AAAAd/slot-machine.gif](https://media1.tenor.com/m/x8v1oNUOmg4AAAAd/slot-machine.gif)")
+        embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url)
+        msg = await ctx.send(embed=embed)
+        
+        reels = ["🍒", "🍋", "💎", "⭐", "🔔", "🍇"]
+        r1, r2, r3 = random.choice(reels), random.choice(reels), random.choice(reels)
+        final_slots = f"**[ {r1} | {r2} | {r3} ]**"
+        
+        await asyncio.sleep(2.5) 
         
         if r1 == r2 == r3: 
             winnings = bet * 10
             db["economy"][uid] += winnings
-            embed = discord.Embed(description=msg + f"🎉 **JACKPOT!** You won **{winnings:,} coins!**", color=discord.Color.gold())
+            embed.color = discord.Color.gold()
+            embed.description = f"{final_slots}\n\n🎉 **JACKPOT!** You won **{winnings:,} coins!**"
+            embed.set_image(url="[https://media1.tenor.com/m/1GvK0ZWe3gAAAAAd/hakari-dance.gif](https://media1.tenor.com/m/1GvK0ZWe3gAAAAAd/hakari-dance.gif)")
         elif r1 == r2 or r2 == r3 or r1 == r3: 
             winnings = int(bet * 1.5)
             db["economy"][uid] += winnings
-            embed = discord.Embed(description=msg + f"✨ **Small Win!** You got **{winnings:,} coins!**", color=discord.Color.green())
+            embed.color = discord.Color.green()
+            embed.description = f"{final_slots}\n\n✨ **Small Win!** You got **{winnings:,} coins!**"
+            embed.set_image(url="[https://media1.tenor.com/m/YwWz2U_1_4YAAAAd/anime-money.gif](https://media1.tenor.com/m/YwWz2U_1_4YAAAAd/anime-money.gif)")
         else: 
-            embed = discord.Embed(description=msg + "💥 **You lost.** Better luck next time.", color=discord.Color.red())
+            embed.color = discord.Color.red()
+            embed.description = f"{final_slots}\n\n💥 **You lost.** Better luck next time."
+            embed.set_image(url="[https://media1.tenor.com/m/q_D7-XQd5vMAAAAd/anime-cry.gif](https://media1.tenor.com/m/q_D7-XQd5vMAAAAd/anime-cry.gif)")
             
         save_db(db)
-        await ctx.send(embed=embed)
+        embed.set_footer(text=f"New Balance: {db['economy'][uid]:,} coins")
+        await msg.edit(embed=embed)
 
     @commands.hybrid_command(name="blackjack", description="Play 21 against the bot.")
     async def blackjack(self, ctx, bet: int):
@@ -1022,14 +953,21 @@ class MasterCommands(commands.Cog):
         player_score = random.randint(15, 25)
         bot_score = random.randint(17, 23)
         
+        embed = discord.Embed(color=discord.Color.gold())
         if player_score > 21: 
-            await ctx.send(embed=discord.Embed(description=f"🃏 **Bust!** You drew {player_score}. Bot had {bot_score}. You lose.", color=discord.Color.red()))
+            embed.description = f"🃏 **Bust!** You drew {player_score}. Bot had {bot_score}. You lose."
+            embed.color = discord.Color.red()
         elif player_score > bot_score or bot_score > 21: 
             db["economy"][uid] += bet * 2
-            await ctx.send(embed=discord.Embed(description=f"🃏 **You Win!** You drew {player_score}! Bot drew {bot_score}. Payout: **{bet*2:,} coins!**", color=discord.Color.green()))
+            embed.description = f"🃏 **You Win!** You drew {player_score}! Bot drew {bot_score}. Payout: **{bet*2:,} coins!**"
+            embed.color = discord.Color.green()
+            embed.set_image(url="[https://media1.tenor.com/m/9O3X3Y0O74cAAAAd/kakegurui-anime.gif](https://media1.tenor.com/m/9O3X3Y0O74cAAAAd/kakegurui-anime.gif)")
         else: 
-            await ctx.send(embed=discord.Embed(description=f"🃏 **Bot Wins.** Bot drew {bot_score}. You had {player_score}. You lose.", color=discord.Color.red()))
+            embed.description = f"🃏 **Bot Wins.** Bot drew {bot_score}. You had {player_score}. You lose."
+            embed.color = discord.Color.red()
+            
         save_db(db)
+        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="coinflip", description="Gamble 50/50.")
     async def coinflip(self, ctx, bet: int, choice: str):
@@ -1042,12 +980,18 @@ class MasterCommands(commands.Cog):
         db["economy"][uid] -= bet
         result = random.choice(["heads", "tails"])
         
+        embed = discord.Embed()
         if choice.lower() == result: 
             db["economy"][uid] += bet * 2
-            await ctx.send(embed=discord.Embed(description=f"🪙 **It landed on {result.capitalize()}!** You won **{bet*2:,} coins!**", color=discord.Color.green()))
+            embed.description = f"🪙 **It landed on {result.capitalize()}!** You won **{bet*2:,} coins!**"
+            embed.color = discord.Color.green()
+            embed.set_image(url="[https://media1.tenor.com/m/9O3X3Y0O74cAAAAd/kakegurui-anime.gif](https://media1.tenor.com/m/9O3X3Y0O74cAAAAd/kakegurui-anime.gif)")
         else: 
-            await ctx.send(embed=discord.Embed(description=f"🪙 **It landed on {result.capitalize()}.** You lost.", color=discord.Color.red()))
+            embed.description = f"🪙 **It landed on {result.capitalize()}.** You lost."
+            embed.color = discord.Color.red()
+            
         save_db(db)
+        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="give", description="Give coins to another user.")
     async def give(self, ctx, member: discord.Member, amount: int):
@@ -1061,13 +1005,22 @@ class MasterCommands(commands.Cog):
         save_db(db)
         await ctx.send(embed=discord.Embed(description=f"💸 **You gave {member.name} {amount:,} coins.**", color=discord.Color.green()))
 
-    @commands.hybrid_command(name="rich", description="View the Top 10 richest players.")
+    @commands.hybrid_command(name="rich", description="View the richest players.")
     async def rich(self, ctx): 
-        sorted_eco = sorted(db["economy"].items(), key=lambda x: x[1], reverse=True)[:10]
-        embed = discord.Embed(title="🏆 Richest Citizens", color=discord.Color.gold())
-        for i, (uid, amt) in enumerate(sorted_eco):
-            embed.add_field(name=f"#{i+1}", value=f"<@{uid}>: **{amt:,}** coins", inline=False)
-        await ctx.send(embed=embed)
+        sorted_eco = sorted(db["economy"].items(), key=lambda x: x[1], reverse=True)
+        if not sorted_eco: 
+            return await ctx.send("No economy data.")
+        
+        chunks = [sorted_eco[i:i + 10] for i in range(0, len(sorted_eco), 10)]
+        embeds = []
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(title=f"🏆 Richest Citizens (Page {i+1}/{len(chunks)})", color=discord.Color.gold())
+            for j, (uid, amt) in enumerate(chunk):
+                embed.add_field(name=f"#{i*10 + j + 1}", value=f"<@{uid}>: **{amt:,}** coins", inline=False)
+            embeds.append(embed)
+            
+        view = PaginationView(ctx, embeds)
+        await ctx.send(embed=embeds[0], view=view)
 
     @commands.hybrid_command(name="fish", description="Cast a line and catch fish.")
     @commands.cooldown(1, 300, commands.BucketType.user)
@@ -1111,7 +1064,7 @@ class MasterCommands(commands.Cog):
             
         current_lvl = db["levels"][uid]["level"]
         if current_lvl >= 13000: 
-            return await ctx.send(embed=discord.Embed(description="🛑 **Max Level 13,000 Reached!** You are already a god.", color=discord.Color.red()))
+            return await ctx.send(embed=discord.Embed(description="🛑 **Max Level 13,000 Reached!** You are already a god. The quests offer you nothing.", color=discord.Color.red()))
             
         xp_gain = random.randint(300, 800)
         db["levels"][uid]["xp"] += xp_gain
@@ -1171,20 +1124,43 @@ class MasterCommands(commands.Cog):
         embed = discord.Embed(title=f"Rank: {target.name}", description=f"⭐ Level: **{lvl_data['level']}**\n✨ XP: **{lvl_data['xp']}**", color=discord.Color.blue())
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="leaderboard_levels", description="Top 10 highest levels.")
+    @commands.hybrid_command(name="leaderboard_levels", description="Top highest levels.")
     async def leaderboard_levels(self, ctx): 
-        sorted_lvls = sorted(db.get("levels", {}).items(), key=lambda x: x[1]["level"], reverse=True)[:10]
-        embed = discord.Embed(title="🏆 Level Leaderboard", color=discord.Color.gold())
-        for i, (uid, data) in enumerate(sorted_lvls):
-            embed.add_field(name=f"#{i+1}", value=f"<@{uid}> - Lvl {data['level']}", inline=False)
-        await ctx.send(embed=embed)
+        sorted_lvls = sorted(db.get("levels", {}).items(), key=lambda x: x[1]["level"], reverse=True)
+        if not sorted_lvls: return await ctx.send("No level data.")
+        
+        chunks = [sorted_lvls[i:i + 10] for i in range(0, len(sorted_lvls), 10)]
+        embeds = []
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(title=f"🏆 Level Leaderboard (Page {i+1}/{len(chunks)})", color=discord.Color.gold())
+            for j, (uid, data) in enumerate(chunk):
+                embed.add_field(name=f"#{i*10 + j + 1}", value=f"<@{uid}> - Lvl {data['level']}", inline=False)
+            embeds.append(embed)
+            
+        view = PaginationView(ctx, embeds)
+        await ctx.send(embed=embeds[0], view=view)
+
+    @commands.hybrid_command(name="leaderboard_rep", description="Top reputation.")
+    async def leaderboard_rep(self, ctx): 
+        sorted_rep = sorted(db.get("rep", {}).items(), key=lambda x: x[1], reverse=True)
+        if not sorted_rep: return await ctx.send("No reputation data.")
+        
+        chunks = [sorted_rep[i:i + 10] for i in range(0, len(sorted_rep), 10)]
+        embeds = []
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(title=f"👍 Most Reputable Citizens (Page {i+1}/{len(chunks)})", color=discord.Color.green())
+            for j, (uid, amt) in enumerate(chunk):
+                embed.add_field(name=f"#{i*10 + j + 1}", value=f"<@{uid}> - {amt} Rep", inline=False)
+            embeds.append(embed)
+            
+        view = PaginationView(ctx, embeds)
+        await ctx.send(embed=embeds[0], view=view)
 
     @commands.hybrid_command(name="givexp", description="Admin command to grant XP.")
     @commands.has_permissions(administrator=True)
     async def givexp(self, ctx, member: discord.Member, amount: int): 
         uid = str(member.id)
-        if uid not in db["levels"]: 
-            db["levels"][uid] = {"xp": 0, "level": 1}
+        if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
         db["levels"][uid]["xp"] += amount
         save_db(db)
         await ctx.send(embed=discord.Embed(description=f"📈 **Granted {amount} XP to {member.name}.**", color=discord.Color.green()))
@@ -1202,8 +1178,7 @@ class MasterCommands(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def setlevel(self, ctx, member: discord.Member, level: int): 
         uid = str(member.id)
-        if uid not in db["levels"]: 
-            db["levels"][uid] = {"xp": 0, "level": 1}
+        if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
         db["levels"][uid]["level"] = level
         save_db(db)
         await ctx.send(embed=discord.Embed(description=f"⭐ **Force set {member.name} to Level {level}.**", color=discord.Color.gold()))
@@ -1221,19 +1196,10 @@ class MasterCommands(commands.Cog):
         if member.id == ctx.author.id: 
             return await ctx.send(embed=discord.Embed(description="❌ You cannot give reputation to yourself.", color=discord.Color.red()))
         uid = str(member.id)
-        if "rep" not in db: 
-            db["rep"] = {}
+        if "rep" not in db: db["rep"] = {}
         db["rep"][uid] = db["rep"].get(uid, 0) + 1
         save_db(db)
         await ctx.send(embed=discord.Embed(description=f"👍 **You gave +1 Reputation to {member.name}.** They now have {db['rep'][uid]} Rep.", color=discord.Color.green()))
-
-    @commands.hybrid_command(name="leaderboard_rep", description="Top 10 reputation.")
-    async def leaderboard_rep(self, ctx): 
-        sorted_rep = sorted(db.get("rep", {}).items(), key=lambda x: x[1], reverse=True)[:10]
-        embed = discord.Embed(title="👍 Most Reputable Citizens", color=discord.Color.green())
-        for i, (uid, amt) in enumerate(sorted_rep):
-            embed.add_field(name=f"#{i+1}", value=f"<@{uid}> - {amt} Rep", inline=False)
-        await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="poll", description="Create a reaction poll.")
     async def poll(self, ctx, question: str): 
@@ -1252,17 +1218,17 @@ class MasterCommands(commands.Cog):
     @commands.hybrid_command(name="giveaway_reroll", description="Reroll a giveaway winner.")
     @commands.has_permissions(manage_messages=True)
     async def giveaway_reroll(self, ctx): 
-        await ctx.send("🎉 **Giveaway rerolled!** (Event listener placeholder)")
+        await ctx.send(embed=discord.Embed(description="🎉 **Giveaway rerolled!** (Event listener placeholder)", color=discord.Color.gold()))
 
     @commands.hybrid_command(name="ticket_setup", description="Setup support tickets.")
     @commands.has_permissions(administrator=True)
     async def ticket_setup(self, ctx): 
-        await ctx.send("🎫 **Support Tickets initialized.** (Button UI placeholder)")
+        await ctx.send(embed=discord.Embed(description="🎫 **Support Tickets initialized.** (Button UI placeholder)", color=discord.Color.blue()))
 
     @commands.hybrid_command(name="ticket_close", description="Closes a ticket channel.")
     @commands.has_permissions(manage_channels=True)
     async def ticket_close(self, ctx): 
-        await ctx.send("Closing ticket...")
+        await ctx.send(embed=discord.Embed(description="Closing ticket...", color=discord.Color.red()))
         await asyncio.sleep(2)
         await ctx.channel.delete()
 
@@ -1340,6 +1306,7 @@ class MasterCommands(commands.Cog):
     @commands.command(name="fakeban")
     async def fakeban(self, ctx, member: discord.Member): 
         embed = discord.Embed(title="User Banned", description=f"🔨 **{member.name}** has been permanently banned from the server.\n\n*Reason: Caught lacking.*", color=discord.Color.red())
+        embed.set_image(url="[https://media1.tenor.com/m/2Y4Z8v3_45wAAAAd/anime-ban.gif](https://media1.tenor.com/m/2Y4Z8v3_45wAAAAd/anime-ban.gif)")
         await ctx.send(embed=embed)
 
     @commands.command(name="rickroll")
@@ -1463,27 +1430,39 @@ class MasterCommands(commands.Cog):
 
     @commands.command(name="pat")
     async def pat(self, ctx, member: discord.Member): 
-        await ctx.send(embed=discord.Embed(description=f"🤚 **{ctx.author.name} gently patted {member.name} on the head!**", color=discord.Color.pink()))
+        embed = discord.Embed(description=f"🤚 **{ctx.author.name} gently patted {member.name} on the head!**", color=discord.Color.pink())
+        embed.set_image(url="[https://media1.tenor.com/m/8Y_2v_3_45wAAAAd/anime-pat.gif](https://media1.tenor.com/m/8Y_2v_3_45wAAAAd/anime-pat.gif)")
+        await ctx.send(embed=embed)
     
     @commands.command(name="punch")
     async def punch(self, ctx, member: discord.Member): 
-        await ctx.send(embed=discord.Embed(description=f"👊 **{ctx.author.name} totally decked {member.name}!**", color=discord.Color.red()))
+        embed = discord.Embed(description=f"👊 **{ctx.author.name} totally decked {member.name}!**", color=discord.Color.red())
+        embed.set_image(url="[https://media1.tenor.com/m/2Y4Z8v3_45wAAAAd/anime-punch.gif](https://media1.tenor.com/m/2Y4Z8v3_45wAAAAd/anime-punch.gif)")
+        await ctx.send(embed=embed)
 
     @commands.command(name="bite")
     async def bite(self, ctx, member: discord.Member): 
-        await ctx.send(embed=discord.Embed(description=f"🧛 **{ctx.author.name} bit {member.name}!**", color=discord.Color.dark_red()))
+        embed = discord.Embed(description=f"🧛 **{ctx.author.name} bit {member.name}!**", color=discord.Color.dark_red())
+        embed.set_image(url="[https://media1.tenor.com/m/ZzR7vT1wS4gAAAAd/anime-bite.gif](https://media1.tenor.com/m/ZzR7vT1wS4gAAAAd/anime-bite.gif)")
+        await ctx.send(embed=embed)
 
     @commands.command(name="kiss")
     async def kiss(self, ctx, member: discord.Member): 
-        await ctx.send(embed=discord.Embed(description=f"💋 **{ctx.author.name} gave {member.name} a kiss!**", color=discord.Color.magenta()))
+        embed = discord.Embed(description=f"💋 **{ctx.author.name} gave {member.name} a kiss!**", color=discord.Color.magenta())
+        embed.set_image(url="[https://media1.tenor.com/m/2XyX9C4kG0QAAAAd/anime-kiss.gif](https://media1.tenor.com/m/2XyX9C4kG0QAAAAd/anime-kiss.gif)")
+        await ctx.send(embed=embed)
 
     @commands.command(name="smug")
     async def smug(self, ctx): 
-        await ctx.send(embed=discord.Embed(description=f"😏 **{ctx.author.name} is looking extremely smug.**", color=discord.Color.purple()))
+        embed = discord.Embed(description=f"😏 **{ctx.author.name} is looking extremely smug.**", color=discord.Color.purple())
+        embed.set_image(url="[https://media1.tenor.com/m/3_4X3Y0_45wAAAAd/anime-smug.gif](https://media1.tenor.com/m/3_4X3Y0_45wAAAAd/anime-smug.gif)")
+        await ctx.send(embed=embed)
 
     @commands.command(name="cry")
     async def cry(self, ctx): 
-        await ctx.send(embed=discord.Embed(description=f"😭 **{ctx.author.name} is crying in the corner.**", color=discord.Color.blue()))
+        embed = discord.Embed(description=f"😭 **{ctx.author.name} is crying in the corner.**", color=discord.Color.blue())
+        embed.set_image(url="[https://media1.tenor.com/m/b-I3Jq7uU9wAAAAd/crying-anime.gif](https://media1.tenor.com/m/b-I3Jq7uU9wAAAAd/crying-anime.gif)")
+        await ctx.send(embed=embed)
 
     @commands.command(name="quote")
     async def quote(self, ctx):
@@ -1505,14 +1484,20 @@ class MasterCommands(commands.Cog):
 
     @commands.command(name="domain_expansion")
     async def domain_expansion(self, ctx): 
-        await ctx.send(embed=discord.Embed(description=f"🤞 **Domain Expansion!** {ctx.author.mention} has trapped everyone in their domain!", color=discord.Color.dark_blue()))
+        embed = discord.Embed(description=f"🤞 **Domain Expansion!** {ctx.author.mention} trapped everyone in their domain!", color=discord.Color.dark_blue())
+        embed.set_image(url="[https://media1.tenor.com/m/7_3X2v2X14YAAAAd/domain-expansion.gif](https://media1.tenor.com/m/7_3X2v2X14YAAAAd/domain-expansion.gif)")
+        await ctx.send(embed=embed)
 
     @commands.command(name="bankai")
     async def bankai(self, ctx): 
-        await ctx.send(embed=discord.Embed(description=f"⚔️ **BANKAI!** {ctx.author.mention}'s spiritual pressure is crushing the server!", color=discord.Color.red()))
+        embed = discord.Embed(description=f"⚔️ **BANKAI!** {ctx.author.mention}'s spiritual pressure is crushing the server!", color=discord.Color.red())
+        embed.set_image(url="[https://media1.tenor.com/m/9O3X3Y0O74cAAAAd/bankai.gif](https://media1.tenor.com/m/9O3X3Y0O74cAAAAd/bankai.gif)")
+        await ctx.send(embed=embed)
 
 # ==========================================
 # FINAL SETUP HOOK
 # ==========================================
 async def setup(bot):
     await bot.add_cog(MasterCommands(bot))
+
+
