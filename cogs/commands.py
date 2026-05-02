@@ -6,7 +6,6 @@ import json
 import random
 import asyncio
 from datetime import timedelta
-import time
 from groq import Groq
 
 # ==========================================
@@ -37,7 +36,6 @@ class MasterCommands(commands.Cog):
         self.bot = bot
         GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
         self.client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-        self.music_queue = {}
         self.ai_event_loop.start()
 
     def cog_unload(self):
@@ -59,7 +57,7 @@ class MasterCommands(commands.Cog):
         return None
 
     # ==========================================
-    # LISTENERS (EVENTS, SNIPE, AFK, XP)
+    # LISTENERS (EVENTS, SNIPE, AFK, XP, DMs)
     # ==========================================
     @commands.Cog.listener()
     async def on_member_join(self, member):
@@ -94,20 +92,34 @@ class MasterCommands(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot or not message.guild: return
+        if message.author.bot: return
+
+        # DM AI Chat Handler
+        if not message.guild:
+            if not self.client: return
+            async with message.channel.typing():
+                try:
+                    reply = self.ask_groq([{"role": "system", "content": "You are habbibi mod (:, a chaotic, funny Discord bot. You are talking in private DMs."}, {"role": "user", "content": message.content}])
+                    await message.channel.send(reply[:2000])
+                except Exception as e: await message.channel.send(f"❌ AI glitched: {e}")
+            return 
+
         uid = str(message.author.id)
 
+        # AFK
         if uid in db["afk"]:
             del db["afk"][uid]; save_db(db)
             await message.channel.send(f"👋 {message.author.mention} removed your AFK status.", delete_after=5)
         for mention in message.mentions:
             if str(mention.id) in db["afk"]: await message.channel.send(f"💤 **{mention.name}** is AFK: {db['afk'][str(mention.id)]}")
 
+        # Automod
         for word in db["config"]["filterwords"]:
             if word in message.content.lower():
                 await message.delete()
                 return await message.channel.send(f"⚠️ {message.author.mention}, that word is banned!", delete_after=5)
 
+        # XP
         if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
         db["levels"][uid]["xp"] += random.randint(10, 25)
         if db["levels"][uid]["xp"] >= (db["levels"][uid]["level"] * 100) * 1.5:
@@ -115,10 +127,12 @@ class MasterCommands(commands.Cog):
             await message.channel.send(f"🎉 **{message.author.mention} leveled up to Level {db['levels'][uid]['level']}!**")
         else: save_db(db)
 
+        # Custom commands
         if message.content.startswith('!') and len(message.content) > 1:
             cmd = message.content[1:].split()[0].lower()
             if cmd in db["custom_commands"]: return await message.channel.send(db["custom_commands"][cmd])
 
+        # Server AI Auto-chat
         if message.channel.id == db["config"].get("ai_channel") and not message.content.startswith(('!', '/')):
             if not self.client: return
             async with message.channel.typing():
@@ -127,6 +141,134 @@ class MasterCommands(commands.Cog):
                     await message.channel.send(reply[:2000])
                 except: pass
 
+    # ==========================================
+    # SERVER CONFIG & GOD MODE
+    # ==========================================
+    @commands.hybrid_command(name="setaichannel", description="Sets the AI auto-reply channel.")
+    @commands.has_permissions(administrator=True)
+    async def setaichannel(self, ctx):
+        db["config"]["ai_channel"] = ctx.channel.id; save_db(db)
+        await ctx.send(f"🤖 **AI Channel Set!** {ctx.channel.mention}")
+
+    @commands.hybrid_command(name="setcmdchannel", description="Locks commands to this channel.")
+    @commands.has_permissions(administrator=True)
+    async def setcmdchannel(self, ctx):
+        db["config"]["cmd_channel"] = ctx.channel.id; save_db(db)
+        await ctx.send(f"🔒 **Command Channel Set!** {ctx.channel.mention}")
+
+    @commands.hybrid_command(name="seteventchannel", description="Sets AI event channel.")
+    @commands.has_permissions(administrator=True)
+    async def seteventchannel(self, ctx):
+        db["config"]["event_channel"] = ctx.channel.id; save_db(db)
+        await ctx.send(f"🌟 **Event Channel Set!** {ctx.channel.mention}")
+
+    @commands.hybrid_command(name="deployserver", description="Wipes and builds server.")
+    @commands.has_permissions(administrator=True)
+    async def deployserver(self, ctx):
+        await ctx.send("⚠️ **CLEAN SLATE PROTOCOL.**")
+        guild = ctx.guild
+        for c in guild.channels:
+            try: await c.delete(); await asyncio.sleep(0.5)
+            except: pass
+        for r in guild.roles:
+            if r.name != "@everyone" and not r.managed and r < ctx.guild.me.top_role:
+                try: await r.delete(); await asyncio.sleep(0.5)
+                except: pass
+        roles = [{"name": "Admin", "color": discord.Color.red()}, {"name": "Moderator", "color": discord.Color.orange()}, {"name": "Jailed", "color": discord.Color.dark_grey()}]
+        cr = {}
+        for r in roles:
+            try: cr[r["name"]] = await guild.create_role(name=r["name"], color=r["color"], permissions=discord.Permissions(administrator=(r["name"]=="Admin")), hoist=True); await asyncio.sleep(1)
+            except: pass
+        try: await ctx.author.add_roles(cr["Admin"])
+        except: pass
+        ci = await guild.create_category("📌 INFORMATION"); await guild.create_text_channel("rules", category=ci)
+        cc = await guild.create_category("💬 CHAT"); gc = await guild.create_text_channel("general", category=cc); bc = await guild.create_text_channel("bot-commands", category=cc); ac = await guild.create_text_channel("talk-to-ai", category=cc)
+        cv = await guild.create_category("🔊 VOICE"); await guild.create_voice_channel("General VC", category=cv)
+        for cat in guild.categories:
+            try: await cat.set_permissions(cr["Jailed"], read_messages=False)
+            except: pass
+        db["config"]["cmd_channel"] = bc.id; db["config"]["ai_channel"] = ac.id; db["config"]["event_channel"] = gc.id; save_db(db)
+        await gc.send(f"{ctx.author.mention} ✅ Deployment Complete.")
+
+    @commands.hybrid_command(name='aicommand', description="Master AI brain.")
+    @commands.has_permissions(administrator=True)
+    async def aicommand(self, ctx, *, instruction: str):
+        if not self.client: return await ctx.send("🤖 AI offline.")
+        await ctx.defer()
+        prompt = f"""Omnipotent Discord bot. Boss says: "{instruction}"
+        Output JSON array: 1. Reply: {{"action": "reply", "message": "text"}} 2. Execute Python: {{"action": "execute", "code": "await ctx.send('Done!')"}}
+        STRICT RULES: JSON ARRAY ONLY. discord.py async code. Access: 'ctx', 'bot', 'discord', 'asyncio', 'db'."""
+        try:
+            raw = self.ask_groq([{"role": "user", "content": prompt}])
+            start_idx, end_idx = raw.find('['), raw.rfind(']')
+            clean_json = raw[start_idx:end_idx+1] if start_idx != -1 else raw.replace('```json', '').replace('```python', '').replace('```', '').strip()
+            if clean_json.startswith('{'): clean_json = f"[{clean_json}]"
+            actions = json.loads(clean_json)
+            for act in actions:
+                atype = act.get("action")
+                if atype == "reply": await ctx.send(f"🤖 {act.get('message')}")
+                elif atype == "execute":
+                    msg = await ctx.send("⚡ **Executing Python...**")
+                    try:
+                        wrapped = f"async def __ai_exec():\n" + "\n".join([f"    {line}" for line in act.get("code", "").split("\n")])
+                        exec_env = {'discord': discord, 'bot': self.bot, 'ctx': ctx, 'asyncio': asyncio, 'db': db}
+                        exec(wrapped, exec_env); await exec_env['__ai_exec']()
+                        await msg.edit(content="✅ **Execution Successful!**")
+                    except Exception as err: await msg.edit(content=f"⚠️ **Failed:**\n```py\n{err}```")
+        except Exception as e: await ctx.send(f"❌ Error: {e}")
+
+    @commands.hybrid_command(name="forceevent", description="Force hourly event.")
+    @commands.has_permissions(administrator=True)
+    async def forceevent(self, ctx):
+        await ctx.send("⏳ **Forcing AI Event...**")
+        embed = discord.Embed(title="🌟 Event", description=self.ask_groq([{"role": "user", "content": "Generate a modern Discord event."}]), color=discord.Color.blurple())
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="tldr", description="AI summarizes chat.")
+    async def tldr(self, ctx):
+        await ctx.defer(); log = "\n".join([m.content async for m in ctx.channel.history(limit=50) if m.content])
+        await ctx.send(f"📜 **TL;DR:** {self.ask_groq([{'role': 'user', 'content': f'Summarize: {log}'}])}")
+
+    @commands.hybrid_command(name="roast_history", description="AI roasts history.")
+    async def roast_history(self, ctx, member: discord.Member):
+        await ctx.defer(); log = "\n".join([m.content async for m in ctx.channel.history(limit=20) if m.author == member and m.content])
+        await ctx.send(f"🔥 **Roast for {member.name}:**\n{self.ask_groq([{'role': 'user', 'content': f'Brutally roast this user based on these messages: {log}'}])}")
+
+    @commands.hybrid_command(name="gothic_translate", description="Translate to dark fantasy.")
+    async def gothic_translate(self, ctx, *, text: str):
+        await ctx.defer()
+        await ctx.send(f"🦇 **Gothic:**\n{self.ask_groq([{'role': 'user', 'content': f'Rewrite into dark gothic royal decree: {text}'}])}")
+
+    @commands.hybrid_command(name="lore", description="AI generates server lore.")
+    async def lore(self, ctx):
+        await ctx.defer()
+        await ctx.send(f"📖 **Server Lore:**\n{self.ask_groq([{'role': 'user', 'content': 'Write an epic dark fantasy backstory for this Discord server.'}])}")
+
+    @commands.hybrid_command(name="code_fix", description="AI fixes broken code.")
+    async def code_fix(self, ctx, *, code: str):
+        await ctx.defer()
+        await ctx.send(f"🛠️ **Code Fix:**\n{self.ask_groq([{'role': 'user', 'content': f'Fix this python code and explain briefly: {code}'}])}")
+
+    @commands.hybrid_command(name="name_idea", description="AI suggests names.")
+    async def name_idea(self, ctx):
+        await ctx.defer()
+        await ctx.send(f"💡 **Ideas:**\n{self.ask_groq([{'role': 'user', 'content': 'Give 5 cool discord role names.'}])}")
+
+    @commands.hybrid_command(name="ai_image", description="Generate image.")
+    async def ai_image(self, ctx, *, prompt: str): await ctx.send("🖼️ [Image generation API placeholder]")
+
+    @commands.hybrid_command(name="vibecheck", description="AI vibe check.")
+    async def vibecheck(self, ctx, member: discord.Member):
+        await ctx.defer(); log = "\n".join([m.content async for m in ctx.channel.history(limit=20) if m.author == member and m.content])
+        await ctx.send(f"🔮 **Vibe Check:**\n{self.ask_groq([{'role': 'user', 'content': f'Analyze the vibe of this user, be funny: {log}'}])}")
+
+    @commands.hybrid_command(name="debate", description="Debate AI.")
+    async def debate(self, ctx, *, topic: str):
+        await ctx.defer(); await ctx.send(f"⚖️ **Debate:**\n{self.ask_groq([{'role': 'system', 'content': 'Argue against the user passionately.'}, {'role': 'user', 'content': topic}])}")
+
+    @commands.hybrid_command(name="bossfight", description="AI runs a boss fight.")
+    async def bossfight(self, ctx):
+        await ctx.defer(); await ctx.send(f"⚔️ **BOSS FIGHT:**\n{self.ask_groq([{'role': 'user', 'content': 'Generate a short text-based boss fight scenario for chat.'}])}")
     # ==========================================
     # 🛡️ THE IRON FIST (Moderation)
     # ==========================================
@@ -188,12 +330,11 @@ class MasterCommands(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def massnick(self, ctx, *, nickname: str):
         await ctx.send(f"🔄 Changing nicknames to {nickname}...")
-        count = 0
         for member in ctx.guild.members:
             if not member.bot and member < ctx.guild.me.top_role:
-                try: await member.edit(nick=nickname); count += 1; await asyncio.sleep(0.5)
+                try: await member.edit(nick=nickname); await asyncio.sleep(0.5)
                 except: pass
-        await ctx.send(f"✅ Changed {count} nicknames.")
+        await ctx.send("✅ Finished mass nickname change.")
 
     @commands.hybrid_command(name="strip", description="Removes all roles from a user.")
     @commands.has_permissions(administrator=True)
@@ -227,11 +368,9 @@ class MasterCommands(commands.Cog):
     @commands.hybrid_command(name="audit", description="Pulls a list of moderation actions.")
     @commands.has_permissions(administrator=True)
     async def audit(self, ctx, member: discord.Member):
-        await ctx.send(f"🔍 Fetching audit logs for {member.name} (Recent)...")
         logs = [entry async for entry in ctx.guild.audit_logs(limit=10, user=member)]
         if not logs: return await ctx.send("No recent actions found.")
-        res = "\n".join([f"- {e.action} on {e.target}" for e in logs])
-        await ctx.send(f"```\n{res}\n```")
+        await ctx.send(f"```\n" + "\n".join([f"- {e.action} on {e.target}" for e in logs]) + "\n```")
 
     @commands.hybrid_command(name="antiraid", description="Toggles anti-raid mode.")
     @commands.has_permissions(administrator=True)
@@ -304,6 +443,193 @@ class MasterCommands(commands.Cog):
     async def unlock(self, ctx):
         await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True); await ctx.send("🔓 Channel unlocked.")
 
+    @commands.hybrid_command(name="jail", description="Strips roles and locks user.")
+    @commands.has_permissions(administrator=True)
+    async def jail(self, ctx, member: discord.Member):
+        db["jailed"][str(member.id)] = [r.id for r in member.roles if r.id != ctx.guild.default_role.id]
+        save_db(db)
+        for r in member.roles[1:]:
+            try: await member.remove_roles(r)
+            except: pass
+        jr = discord.utils.get(ctx.guild.roles, name="Jailed")
+        if jr: await member.add_roles(jr)
+        await ctx.send(f"⛓️ {member.mention} locked up in federal prison.")
+
+    @commands.hybrid_command(name="unjail", description="Releases user from jail.")
+    @commands.has_permissions(administrator=True)
+    async def unjail(self, ctx, member: discord.Member):
+        jr = discord.utils.get(ctx.guild.roles, name="Jailed")
+        if jr in member.roles: await member.remove_roles(jr)
+        for r_id in db["jailed"].pop(str(member.id), []):
+            role = ctx.guild.get_role(r_id)
+            if role: await member.add_roles(role)
+        save_db(db)
+        await ctx.send(f"🔓 {member.mention} made bail.")
+
+    # ==========================================
+    # ⭐ LEVELING & REPUTATION & UTILITY
+    # ==========================================
+    @commands.hybrid_command(name="rank", description="Check XP Level.")
+    async def rank(self, ctx, member: discord.Member = None):
+        uid = str((member or ctx.author).id)
+        lvl = db["levels"].get(uid, {"xp": 0, "level": 1})
+        await ctx.send(f"⭐ **{(member or ctx.author).name}** is Level **{lvl['level']}** ({lvl['xp']} XP).")
+
+    @commands.hybrid_command(name="leaderboard_levels", description="Top 10 levels.")
+    async def leaderboard_levels(self, ctx):
+        sorted_lvls = sorted(db["levels"].items(), key=lambda x: x[1]["level"], reverse=True)[:10]
+        res = "**Top 10 Highest Levels:**\n"
+        for i, (uid, data) in enumerate(sorted_lvls): res += f"{i+1}. <@{uid}> - Lvl {data['level']}\n"
+        await ctx.send(res)
+
+    @commands.hybrid_command(name="givexp", description="Admin give XP.")
+    @commands.has_permissions(administrator=True)
+    async def givexp(self, ctx, member: discord.Member, amount: int):
+        uid = str(member.id)
+        if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
+        db["levels"][uid]["xp"] += amount; save_db(db)
+        await ctx.send(f"📈 Gave {amount} XP to {member.name}.")
+
+    @commands.hybrid_command(name="removexp", description="Admin remove XP.")
+    @commands.has_permissions(administrator=True)
+    async def removexp(self, ctx, member: discord.Member, amount: int):
+        uid = str(member.id)
+        if uid in db["levels"]: db["levels"][uid]["xp"] = max(0, db["levels"][uid]["xp"] - amount); save_db(db)
+        await ctx.send(f"📉 Removed {amount} XP from {member.name}.")
+
+    @commands.hybrid_command(name="setlevel", description="Admin set level.")
+    @commands.has_permissions(administrator=True)
+    async def setlevel(self, ctx, member: discord.Member, level: int):
+        uid = str(member.id)
+        if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
+        db["levels"][uid]["level"] = level; save_db(db)
+        await ctx.send(f"⭐ Set {member.name} to Level {level}.")
+
+    @commands.hybrid_command(name="rewards", description="View level rewards.")
+    async def rewards(self, ctx): await ctx.send("🎁 **Level Rewards:**\nLevel 10 - Trusted\nLevel 50 - Ronin\nLevel 100 - God")
+
+    @commands.hybrid_command(name="rep", description="Give reputation.")
+    async def rep(self, ctx, member: discord.Member):
+        if member.id == ctx.author.id: return await ctx.send("Can't rep yourself.")
+        uid = str(member.id)
+        db["rep"][uid] = db["rep"].get(uid, 0) + 1; save_db(db)
+        await ctx.send(f"👍 Gave +1 Rep to {member.name}. Total: {db['rep'][uid]}")
+
+    @commands.hybrid_command(name="leaderboard_rep", description="Top 10 rep.")
+    async def leaderboard_rep(self, ctx):
+        sorted_rep = sorted(db.get("rep", {}).items(), key=lambda x: x[1], reverse=True)[:10]
+        res = "**Top 10 Most Reputable:**\n"
+        for i, (uid, amt) in enumerate(sorted_rep): res += f"{i+1}. <@{uid}> - {amt} Rep\n"
+        await ctx.send(res)
+
+    @commands.hybrid_command(name="poll", description="Create a poll.")
+    async def poll(self, ctx, question: str):
+        embed = discord.Embed(title="📊 Poll", description=question, color=discord.Color.green())
+        msg = await ctx.send(embed=embed); await msg.add_reaction("👍"); await msg.add_reaction("👎")
+
+    @commands.hybrid_command(name="giveaway_start", description="Start giveaway.")
+    async def giveaway_start(self, ctx, prize: str):
+        msg = await ctx.send(f"🎉 **GIVEAWAY: {prize}** 🎉\nReact with 🎉 to enter!")
+        await msg.add_reaction("🎉")
+
+    @commands.hybrid_command(name="giveaway_reroll", description="Reroll giveaway.")
+    async def giveaway_reroll(self, ctx): await ctx.send("🎉 Giveaway rerolled! Winner: @someone")
+
+    @commands.hybrid_command(name="ticket_setup", description="Setup tickets.")
+    async def ticket_setup(self, ctx): await ctx.send("🎫 Support tickets enabled. (Placeholder UI)")
+
+    @commands.hybrid_command(name="ticket_close", description="Close ticket.")
+    async def ticket_close(self, ctx): await ctx.channel.delete()
+
+    @commands.hybrid_command(name="remindme", description="Set reminder.")
+    async def remindme(self, ctx, seconds: int, *, message: str):
+        await ctx.send(f"⏰ Reminder set for {seconds}s.")
+        await asyncio.sleep(seconds); await ctx.author.send(f"⏰ Reminder: {message}")
+
+    @commands.hybrid_command(name="afk", description="Set AFK status.")
+    async def afk(self, ctx, *, reason: str="AFK"):
+        db["afk"][str(ctx.author.id)] = reason; save_db(db); await ctx.send(f"💤 {ctx.author.mention} is now AFK: {reason}")
+
+    @commands.hybrid_command(name="weather", description="Check weather.")
+    async def weather(self, ctx, city: str): await ctx.send(f"🌤️ The weather in {city} is sunny, 75°F (Simulated).")
+
+    @commands.hybrid_command(name="calc", description="Calculate math.")
+    async def calc(self, ctx, expression: str):
+        try: await ctx.send(f"🧮 Result: `{eval(expression, {'__builtins__': None}, {})}`")
+        except: await ctx.send("❌ Invalid math expression.")
+
+    @commands.hybrid_command(name="translate", description="Translate text.")
+    async def translate(self, ctx, lang: str, *, text: str): await ctx.send(f"🌐 Translated to {lang}: {text} (API simulated).")
+
+    @commands.hybrid_command(name="define", description="Dictionary definition.")
+    async def define(self, ctx, word: str): await ctx.send(f"📖 Definition of {word}: A very cool word. (API simulated).")
+
+    @commands.hybrid_command(name="urban", description="Urban Dictionary.")
+    async def urban(self, ctx, word: str): await ctx.send(f"🏙️ Urban definition for {word}: Slang term. (API simulated).")
+
+    @commands.hybrid_command(name="userhistory", description="Check user history.")
+    async def userhistory(self, ctx, member: discord.Member): await ctx.send(f"📜 {member.name} joined on {member.joined_at.strftime('%Y-%m-%d')}.")
+
+    @commands.hybrid_command(name="roleinfo", description="Check role info.")
+    async def roleinfo(self, ctx, role: discord.Role): await ctx.send(f"🛡️ Role {role.name} has {len(role.members)} members.")
+
+    @commands.hybrid_command(name="servericon", description="Get server icon.")
+    async def servericon(self, ctx): await ctx.send(ctx.guild.icon.url if ctx.guild.icon else "No icon.")
+
+    @commands.hybrid_command(name="ping", description="Bot latency.")
+    async def ping(self, ctx): await ctx.send(f"🏓 Pong! {round(self.bot.latency * 1000)}ms")
+
+    @commands.hybrid_command(name="avatar", description="Get user PFP.")
+    async def avatar(self, ctx, member: discord.Member = None):
+        member = member or ctx.author
+        embed = discord.Embed(title=f"{member.name}'s Avatar", color=discord.Color.blue())
+        embed.set_image(url=member.avatar.url if member.avatar else member.default_avatar.url)
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="serverinfo", description="View server stats.")
+    async def serverinfo(self, ctx):
+        embed = discord.Embed(title=f"Server Info - {ctx.guild.name}", color=discord.Color.gold())
+        embed.add_field(name="👑 Owner", value=ctx.guild.owner.mention)
+        embed.add_field(name="👥 Members", value=ctx.guild.member_count)
+        await ctx.send(embed=embed)
+
+    # ==========================================
+    # 🎭 ANIME & ACTION ROLEPLAY
+    # ==========================================
+    @commands.hybrid_command(name="pat", description="Headpat.")
+    async def pat(self, ctx, member: discord.Member): await ctx.send(f"🤚 {ctx.author.name} patted {member.name}!")
+    
+    @commands.hybrid_command(name="punch", description="Punch.")
+    async def punch(self, ctx, member: discord.Member): await ctx.send(f"👊 {ctx.author.name} punched {member.name}!")
+
+    @commands.hybrid_command(name="bite", description="Bite.")
+    async def bite(self, ctx, member: discord.Member): await ctx.send(f"🧛 {ctx.author.name} bit {member.name}!")
+
+    @commands.hybrid_command(name="kiss", description="Kiss.")
+    async def kiss(self, ctx, member: discord.Member): await ctx.send(f"💋 {ctx.author.name} kissed {member.name}!")
+
+    @commands.hybrid_command(name="smug", description="Smug face.")
+    async def smug(self, ctx): await ctx.send(f"😏 {ctx.author.name} looks extremely smug.")
+
+    @commands.hybrid_command(name="cry", description="Crying.")
+    async def cry(self, ctx): await ctx.send(f"😭 {ctx.author.name} is crying.")
+
+    @commands.hybrid_command(name="quote", description="Anime Quote.")
+    async def quote(self, ctx):
+        quotes = ["If you don't fight, you can't win.", "Since when were you under the impression that I wasn't using Kyoka Suigetsu?"]
+        await ctx.send(f"📜 *\"{random.choice(quotes)}\"*")
+
+    @commands.hybrid_command(name="powerlevel", description="Scan power level.")
+    async def powerlevel(self, ctx, member: discord.Member = None):
+        pwr = random.randint(10, 1000000)
+        if pwr > 900000: await ctx.send(f"💥 {(member or ctx.author).mention}'s power level is **{pwr:,}**! Wang Lin aura!")
+        else: await ctx.send(f"🔍 {(member or ctx.author).mention}'s power level is **{pwr:,}**. Fodder.")
+
+    @commands.hybrid_command(name="domain_expansion", description="Domain Expansion!")
+    async def domain_expansion(self, ctx): await ctx.send(f"🤞 **Domain Expansion:** {ctx.author.mention} trapped the chat in their domain!")
+
+    @commands.hybrid_command(name="bankai", description="Bankai!")
+    async def bankai(self, ctx): await ctx.send(f"⚔️ **BANKAI!** {ctx.author.mention}'s spiritual pressure is crushing the server!")
     # ==========================================
     # 💰 ECONOMY & RPG (The Grind)
     # ==========================================
@@ -479,6 +805,7 @@ class MasterCommands(commands.Cog):
         if bounty <= 0: return await ctx.send("No bounty exists.")
         db["bounties"][tid] = 0; db["economy"][uid] = db["economy"].get(uid, 0) + bounty; save_db(db)
         await ctx.send(f"🔪 You claimed the **{bounty} coin** bounty on {member.name}!")
+
     # ==========================================
     # 🤡 FUN & TROLLING
     # ==========================================
@@ -488,7 +815,7 @@ class MasterCommands(commands.Cog):
 
     @commands.hybrid_command(name="rickroll", description="Disguised DM.")
     async def rickroll(self, ctx, member: discord.Member):
-        try: await member.send("You have been gifted Discord Nitro! Claim here: https://www.youtube.com/watch?v=dQw4w9WgXcQ"); await ctx.send(f"Sent a package to {member.name}.")
+        try: await member.send("You have been gifted Discord Nitro! Claim here: [https://www.youtube.com/watch?v=dQw4w9WgXcQ](https://www.youtube.com/watch?v=dQw4w9WgXcQ)"); await ctx.send(f"Sent a package to {member.name}.")
         except: await ctx.send("DMs are closed.")
 
     @commands.hybrid_command(name="howgay", description="Gay rater.")
@@ -552,165 +879,36 @@ class MasterCommands(commands.Cog):
             if jr in member.roles: await member.remove_roles(jr); await ctx.send(f"🔓 SUCCESS! Broke {member.name} out!")
         else: await ctx.send("❌ Jailbreak failed. The guards caught you.")
 
-    # ==========================================
-    # 🎭 ANIME & ACTION ROLEPLAY
-    # ==========================================
-    @commands.hybrid_command(name="pat", description="Headpat.")
-    async def pat(self, ctx, member: discord.Member): await ctx.send(f"🤚 {ctx.author.name} patted {member.name}!")
-    
-    @commands.hybrid_command(name="punch", description="Punch.")
-    async def punch(self, ctx, member: discord.Member): await ctx.send(f"👊 {ctx.author.name} punched {member.name}!")
+    @commands.hybrid_command(name="eightball", description="Ask a question.")
+    async def eightball(self, ctx, *, question: str):
+        res = random.choice(["Yes.", "No.", "Maybe.", "Definitely not.", "Without a doubt."])
+        await ctx.send(f"🎱 **Q:** {question}\n**A:** {res}")
 
-    @commands.hybrid_command(name="bite", description="Bite.")
-    async def bite(self, ctx, member: discord.Member): await ctx.send(f"🧛 {ctx.author.name} bit {member.name}!")
+    @commands.hybrid_command(name="hack", description="Fake hack someone.")
+    async def hack(self, ctx, member: discord.Member):
+        msg = await ctx.send(f"💻 Hacking {member.name}...")
+        await asyncio.sleep(2)
+        await msg.edit(content=f"✅ Successfully hacked {member.mention}. Selling history for 5 robux.")
 
-    @commands.hybrid_command(name="kiss", description="Kiss.")
-    async def kiss(self, ctx, member: discord.Member): await ctx.send(f"💋 {ctx.author.name} kissed {member.name}!")
-
-    @commands.hybrid_command(name="smug", description="Smug face.")
-    async def smug(self, ctx): await ctx.send(f"😏 {ctx.author.name} looks extremely smug.")
-
-    @commands.hybrid_command(name="cry", description="Crying.")
-    async def cry(self, ctx): await ctx.send(f"😭 {ctx.author.name} is crying.")
-
-    @commands.hybrid_command(name="quote", description="Anime Quote.")
-    async def quote(self, ctx):
-        quotes = ["If you don't fight, you can't win.", "Since when were you under the impression that I wasn't using Kyoka Suigetsu?"]
-        await ctx.send(f"📜 *\"{random.choice(quotes)}\"*")
-
-    @commands.hybrid_command(name="powerlevel", description="Scan power level.")
-    async def powerlevel(self, ctx, member: discord.Member = None):
-        pwr = random.randint(10, 1000000)
-        if pwr > 900000: await ctx.send(f"💥 {(member or ctx.author).mention}'s power level is **{pwr:,}**! Wang Lin aura!")
-        else: await ctx.send(f"🔍 {(member or ctx.author).mention}'s power level is **{pwr:,}**. Fodder.")
-
-    @commands.hybrid_command(name="domain_expansion", description="Domain Expansion!")
-    async def domain_expansion(self, ctx): await ctx.send(f"🤞 **Domain Expansion:** {ctx.author.mention} trapped the chat in their domain!")
-
-    @commands.hybrid_command(name="bankai", description="Bankai!")
-    async def bankai(self, ctx): await ctx.send(f"⚔️ **BANKAI!** {ctx.author.mention}'s spiritual pressure is crushing the server!")
+    @commands.hybrid_command(name="ship", description="Matchmake two people.")
+    async def ship(self, ctx, m1: discord.Member, m2: discord.Member=None):
+        m2 = m2 or ctx.author
+        await ctx.send(f"❤️ **Ship:** {m1.name} x {m2.name}\n**Rating:** {random.randint(0,100)}%")
 
     # ==========================================
-    # ⚙️ UTILITY & LEVELING
+    # 🎵 VOICE & MEDIA (Basic Placeholders)
     # ==========================================
-    @commands.hybrid_command(name="poll", description="Create a poll.")
-    async def poll(self, ctx, question: str):
-        embed = discord.Embed(title="📊 Poll", description=question, color=discord.Color.green())
-        msg = await ctx.send(embed=embed); await msg.add_reaction("👍"); await msg.add_reaction("👎")
-
-    @commands.hybrid_command(name="giveaway_start", description="Start giveaway.")
-    async def giveaway_start(self, ctx, prize: str):
-        msg = await ctx.send(f"🎉 **GIVEAWAY: {prize}** 🎉\nReact with 🎉 to enter!")
-        await msg.add_reaction("🎉")
-
-    @commands.hybrid_command(name="giveaway_reroll", description="Reroll giveaway.")
-    async def giveaway_reroll(self, ctx): await ctx.send("🎉 Giveaway rerolled! Winner: @someone")
-
-    @commands.hybrid_command(name="ticket_setup", description="Setup tickets.")
-    async def ticket_setup(self, ctx): await ctx.send("🎫 Support tickets enabled. (Placeholder UI)")
-
-    @commands.hybrid_command(name="ticket_close", description="Close ticket.")
-    async def ticket_close(self, ctx): await ctx.channel.delete()
-
-    @commands.hybrid_command(name="remindme", description="Set reminder.")
-    async def remindme(self, ctx, seconds: int, *, message: str):
-        await ctx.send(f"⏰ Reminder set for {seconds}s.")
-        await asyncio.sleep(seconds); await ctx.author.send(f"⏰ Reminder: {message}")
-
-    @commands.hybrid_command(name="afk", description="Set AFK status.")
-    async def afk(self, ctx, *, reason: str="AFK"):
-        db["afk"][str(ctx.author.id)] = reason; save_db(db); await ctx.send(f"💤 {ctx.author.mention} is now AFK: {reason}")
-
-    @commands.hybrid_command(name="weather", description="Check weather.")
-    async def weather(self, ctx, city: str): await ctx.send(f"🌤️ The weather in {city} is sunny, 75°F (Simulated).")
-
-    @commands.hybrid_command(name="calc", description="Calculate math.")
-    async def calc(self, ctx, expression: str):
-        try: await ctx.send(f"🧮 Result: `{eval(expression, {'__builtins__': None}, {})}`")
-        except: await ctx.send("❌ Invalid math expression.")
-
-    @commands.hybrid_command(name="translate", description="Translate text.")
-    async def translate(self, ctx, lang: str, *, text: str): await ctx.send(f"🌐 Translated to {lang}: {text} (API simulated).")
-
-    @commands.hybrid_command(name="define", description="Dictionary definition.")
-    async def define(self, ctx, word: str): await ctx.send(f"📖 Definition of {word}: A very cool word. (API simulated).")
-
-    @commands.hybrid_command(name="urban", description="Urban Dictionary.")
-    async def urban(self, ctx, word: str): await ctx.send(f"🏙️ Urban definition for {word}: Slang term. (API simulated).")
-
-    @commands.hybrid_command(name="userhistory", description="Check user history.")
-    async def userhistory(self, ctx, member: discord.Member): await ctx.send(f"📜 {member.name} joined on {member.joined_at.strftime('%Y-%m-%d')}.")
-
-    @commands.hybrid_command(name="roleinfo", description="Check role info.")
-    async def roleinfo(self, ctx, role: discord.Role): await ctx.send(f"🛡️ Role {role.name} has {len(role.members)} members.")
-
-    @commands.hybrid_command(name="servericon", description="Get server icon.")
-    async def servericon(self, ctx): await ctx.send(ctx.guild.icon.url if ctx.guild.icon else "No icon.")
-
-    @commands.hybrid_command(name="rank", description="Check XP Level.")
-    async def rank(self, ctx, member: discord.Member = None):
-        uid = str((member or ctx.author).id)
-        lvl = db["levels"].get(uid, {"xp": 0, "level": 1})
-        await ctx.send(f"⭐ **{(member or ctx.author).name}** is Level **{lvl['level']}** ({lvl['xp']} XP).")
-
-    @commands.hybrid_command(name="leaderboard_levels", description="Top 10 levels.")
-    async def leaderboard_levels(self, ctx):
-        sorted_lvls = sorted(db["levels"].items(), key=lambda x: x[1]["level"], reverse=True)[:10]
-        res = "**Top 10 Highest Levels:**\n"
-        for i, (uid, data) in enumerate(sorted_lvls): res += f"{i+1}. <@{uid}> - Lvl {data['level']}\n"
-        await ctx.send(res)
-
-    @commands.hybrid_command(name="givexp", description="Admin give XP.")
-    @commands.has_permissions(administrator=True)
-    async def givexp(self, ctx, member: discord.Member, amount: int):
-        uid = str(member.id)
-        if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
-        db["levels"][uid]["xp"] += amount; save_db(db)
-        await ctx.send(f"📈 Gave {amount} XP to {member.name}.")
-
-    @commands.hybrid_command(name="removexp", description="Admin remove XP.")
-    @commands.has_permissions(administrator=True)
-    async def removexp(self, ctx, member: discord.Member, amount: int):
-        uid = str(member.id)
-        if uid in db["levels"]: db["levels"][uid]["xp"] = max(0, db["levels"][uid]["xp"] - amount); save_db(db)
-        await ctx.send(f"📉 Removed {amount} XP from {member.name}.")
-
-    @commands.hybrid_command(name="setlevel", description="Admin set level.")
-    @commands.has_permissions(administrator=True)
-    async def setlevel(self, ctx, member: discord.Member, level: int):
-        uid = str(member.id)
-        if uid not in db["levels"]: db["levels"][uid] = {"xp": 0, "level": 1}
-        db["levels"][uid]["level"] = level; save_db(db)
-        await ctx.send(f"⭐ Set {member.name} to Level {level}.")
-
-    @commands.hybrid_command(name="rewards", description="View level rewards.")
-    async def rewards(self, ctx): await ctx.send("🎁 **Level Rewards:**\nLevel 10 - Trusted\nLevel 50 - Ronin\nLevel 100 - God")
-
-    @commands.hybrid_command(name="rep", description="Give reputation.")
-    async def rep(self, ctx, member: discord.Member):
-        if member.id == ctx.author.id: return await ctx.send("Can't rep yourself.")
-        uid = str(member.id)
-        db["rep"][uid] = db["rep"].get(uid, 0) + 1; save_db(db)
-        await ctx.send(f"👍 Gave +1 Rep to {member.name}. Total: {db['rep'][uid]}")
-
-    @commands.hybrid_command(name="leaderboard_rep", description="Top 10 rep.")
-    async def leaderboard_rep(self, ctx):
-        sorted_rep = sorted(db.get("rep", {}).items(), key=lambda x: x[1], reverse=True)[:10]
-        res = "**Top 10 Most Reputable:**\n"
-        for i, (uid, amt) in enumerate(sorted_rep): res += f"{i+1}. <@{uid}> - {amt} Rep\n"
-        await ctx.send(res)
-
-    # ==========================================
-    # 🎵 VOICE & MEDIA (Basic Mock Implementations)
-    # ==========================================
-    @commands.hybrid_command(name="join", description="Joins VC.")
+    @commands.hybrid_command(name="join", description="Joins your Voice Channel.")
     async def join(self, ctx):
-        if not ctx.author.voice: return await ctx.send("❌ Not in a VC.")
-        await ctx.author.voice.channel.connect(); await ctx.send("🔊 Joined VC.")
+        if not ctx.author.voice: return await ctx.send("❌ You are not in a voice channel.")
+        channel = ctx.author.voice.channel
+        await channel.connect()
+        await ctx.send(f"🔊 Joined {channel.name}.")
 
-    @commands.hybrid_command(name="leave", description="Leaves VC.")
+    @commands.hybrid_command(name="leave", description="Leaves the Voice Channel.")
     async def leave(self, ctx):
-        if ctx.voice_client: await ctx.voice_client.disconnect(); await ctx.send("👋 Disconnected.")
+        if ctx.voice_client: await ctx.voice_client.disconnect(); await ctx.send("👋 Disconnected from VC.")
+        else: await ctx.send("I am not in a voice channel.")
 
     @commands.hybrid_command(name="play", description="Plays music.")
     async def play(self, ctx, song: str): await ctx.send(f"🎶 Searching and queuing '{song}'... (Requires FFmpeg)")
@@ -736,144 +934,8 @@ class MasterCommands(commands.Cog):
     @commands.hybrid_command(name="tts", description="Text to speech.")
     async def tts(self, ctx, *, message: str): await ctx.send(f"🗣️ TTS Reading: {message}")
 
-    # ==========================================
-    # 🧠 SPECIFIC AI TOOLS (GROQ) & DEPLOYER
-    # ==========================================
-    @commands.hybrid_command(name="tldr", description="AI summarizes chat.")
-    async def tldr(self, ctx):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        log = "\n".join([m.content async for m in ctx.channel.history(limit=50) if m.content])
-        await ctx.send(f"📜 **TL;DR:** {self.ask_groq([{'role': 'user', 'content': f'Summarize this: {log}'}])}")
-
-    @commands.hybrid_command(name="roast_history", description="AI roasts history.")
-    async def roast_history(self, ctx, member: discord.Member):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        log = "\n".join([m.content async for m in ctx.channel.history(limit=20) if m.author == member and m.content])
-        await ctx.send(f"🔥 **Roast for {member.name}:**\n{self.ask_groq([{'role': 'user', 'content': f'Brutally roast this user based on their messages: {log}'}])}")
-
-    @commands.hybrid_command(name="gothic_translate", description="Translate to dark fantasy.")
-    async def gothic_translate(self, ctx, *, text: str):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        await ctx.send(f"🦇 **Gothic:**\n{self.ask_groq([{'role': 'user', 'content': f'Rewrite into dark gothic royal decree: {text}'}])}")
-
-    @commands.hybrid_command(name="lore", description="AI generates server lore.")
-    async def lore(self, ctx):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        await ctx.send(f"📖 **Server Lore:**\n{self.ask_groq([{'role': 'user', 'content': 'Write an epic dark fantasy backstory for this Discord server.'}])}")
-
-    @commands.hybrid_command(name="code_fix", description="AI fixes broken code.")
-    async def code_fix(self, ctx, *, code: str):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        await ctx.send(f"🛠️ **Code Fix:**\n{self.ask_groq([{'role': 'user', 'content': f'Fix this python code and explain briefly: {code}'}])}")
-
-    @commands.hybrid_command(name="name_idea", description="AI suggests names.")
-    async def name_idea(self, ctx):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        await ctx.send(f"💡 **Ideas:**\n{self.ask_groq([{'role': 'user', 'content': 'Give 5 cool dark fantasy discord role names.'}])}")
-
-    @commands.hybrid_command(name="ai_image", description="Generate image.")
-    async def ai_image(self, ctx, *, prompt: str): await ctx.send("🖼️ [Image generation API placeholder]")
-
-    @commands.hybrid_command(name="vibecheck", description="AI vibe check.")
-    async def vibecheck(self, ctx, member: discord.Member):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        log = "\n".join([m.content async for m in ctx.channel.history(limit=20) if m.author == member and m.content])
-        await ctx.send(f"🔮 **Vibe Check:**\n{self.ask_groq([{'role': 'user', 'content': f'Analyze the vibe of this user, be funny: {log}'}])}")
-
-    @commands.hybrid_command(name="debate", description="Debate AI.")
-    async def debate(self, ctx, *, topic: str):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        await ctx.send(f"⚖️ **Debate:**\n{self.ask_groq([{'role': 'system', 'content': 'Argue against the user passionately.'}, {'role': 'user', 'content': topic}])}")
-
-    @commands.hybrid_command(name="bossfight", description="AI runs a boss fight.")
-    async def bossfight(self, ctx):
-        if not self.client: return await ctx.send("AI offline.")
-        await ctx.defer()
-        await ctx.send(f"⚔️ **BOSS FIGHT:**\n{self.ask_groq([{'role': 'user', 'content': 'Generate a short text-based boss fight scenario for chat.'}])}")
-
-    @commands.hybrid_command(name="forceevent", description="Force hourly event.")
-    @commands.has_permissions(administrator=True)
-    async def forceevent(self, ctx):
-        await ctx.send("⏳ **Forcing AI Event...**")
-        prompt = "Generate a highly engaging, modern Discord event."
-        embed = discord.Embed(title="🌟 Event", description=self.ask_groq([{"role": "user", "content": prompt}]), color=discord.Color.blurple())
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name='aicommand', description="Master AI brain.")
-    @commands.has_permissions(administrator=True)
-    async def aicommand(self, ctx, *, instruction: str):
-        if not self.client: return await ctx.send("🤖 AI offline.")
-        await ctx.defer()
-        prompt = f"""Omnipotent Discord bot. Boss says: "{instruction}"
-        Output JSON array: 1. Reply: {{"action": "reply", "message": "text"}} 2. Execute Python: {{"action": "execute", "code": "await ctx.send('Done!')"}}
-        STRICT RULES: JSON ARRAY ONLY. discord.py async code. Access: 'ctx', 'bot', 'discord', 'asyncio', 'db'."""
-        try:
-            raw = self.ask_groq([{"role": "user", "content": prompt}])
-            start_idx, end_idx = raw.find('['), raw.rfind(']')
-            clean_json = raw[start_idx:end_idx+1] if start_idx != -1 else raw.replace('```json', '').replace('```python', '').replace('```', '').strip()
-            if clean_json.startswith('{'): clean_json = f"[{clean_json}]"
-            actions = json.loads(clean_json)
-            for act in actions:
-                atype = act.get("action")
-                if atype == "reply": await ctx.send(f"🤖 {act.get('message')}")
-                elif atype == "execute":
-                    msg = await ctx.send("⚡ **Executing Python...**")
-                    try:
-                        wrapped = f"async def __ai_exec():\n" + "\n".join([f"    {line}" for line in act.get("code", "").split("\n")])
-                        exec_env = {'discord': discord, 'bot': self.bot, 'ctx': ctx, 'asyncio': asyncio, 'db': db}
-                        exec(wrapped, exec_env); await exec_env['__ai_exec']()
-                        await msg.edit(content="✅ **Execution Successful!**")
-                    except Exception as err: await msg.edit(content=f"⚠️ **Failed:**\n```py\n{err}```")
-        except Exception as e: await ctx.send(f"❌ Error: {e}")
-
-    @commands.hybrid_command(name="setaichannel", description="Sets AI auto-reply channel.")
-    @commands.has_permissions(administrator=True)
-    async def setaichannel(self, ctx): db["config"]["ai_channel"] = ctx.channel.id; save_db(db); await ctx.send(f"🤖 **AI Channel Set!** {ctx.channel.mention}")
-
-    @commands.hybrid_command(name="setcmdchannel", description="Locks commands.")
-    @commands.has_permissions(administrator=True)
-    async def setcmdchannel(self, ctx): db["config"]["cmd_channel"] = ctx.channel.id; save_db(db); await ctx.send(f"🔒 **Command Channel Set!** {ctx.channel.mention}")
-
-    @commands.hybrid_command(name="seteventchannel", description="Sets event channel.")
-    @commands.has_permissions(administrator=True)
-    async def seteventchannel(self, ctx): db["config"]["event_channel"] = ctx.channel.id; save_db(db); await ctx.send(f"🌟 **Event Channel Set!** {ctx.channel.mention}")
-
-    @commands.hybrid_command(name="deployserver", description="Wipes and builds server.")
-    @commands.has_permissions(administrator=True)
-    async def deployserver(self, ctx):
-        await ctx.send("⚠️ **CLEAN SLATE PROTOCOL.**")
-        guild = ctx.guild
-        for c in guild.channels:
-            try: await c.delete(); await asyncio.sleep(0.5)
-            except: pass
-        for r in guild.roles:
-            if r.name != "@everyone" and not r.managed and r < ctx.guild.me.top_role:
-                try: await r.delete(); await asyncio.sleep(0.5)
-                except: pass
-        roles = [{"name": "Admin", "color": discord.Color.red()}, {"name": "Moderator", "color": discord.Color.orange()}, {"name": "Jailed", "color": discord.Color.dark_grey()}]
-        cr = {}
-        for r in roles:
-            try: cr[r["name"]] = await guild.create_role(name=r["name"], color=r["color"], permissions=discord.Permissions(administrator=(r["name"]=="Admin")), hoist=True); await asyncio.sleep(1)
-            except: pass
-        try: await ctx.author.add_roles(cr["Admin"])
-        except: pass
-        ci = await guild.create_category("📌 INFORMATION"); await guild.create_text_channel("rules", category=ci)
-        cc = await guild.create_category("💬 CHAT"); gc = await guild.create_text_channel("general", category=cc); bc = await guild.create_text_channel("bot-commands", category=cc); ac = await guild.create_text_channel("talk-to-ai", category=cc)
-        cv = await guild.create_category("🔊 VOICE"); await guild.create_voice_channel("General VC", category=cv)
-        for cat in guild.categories:
-            try: await cat.set_permissions(cr["Jailed"], read_messages=False)
-            except: pass
-        db["config"]["cmd_channel"] = bc.id; db["config"]["ai_channel"] = ac.id; db["config"]["event_channel"] = gc.id; save_db(db)
-        await gc.send(f"{ctx.author.mention} ✅ Deployment Complete.")
-
-# THE FINAL SINK: MUST BE AT THE VERY BOTTOM OF THE FILE
+# ==========================================
+# FINAL SETUP SINK
+# ==========================================
 async def setup(bot):
     await bot.add_cog(MasterCommands(bot))
