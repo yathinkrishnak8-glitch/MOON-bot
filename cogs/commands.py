@@ -62,17 +62,6 @@ class MasterCommands(commands.Cog):
                 continue 
         raise Exception("All AI models failed.")
 
-    def find_member(self, ctx, search_term):
-        if not search_term: 
-            return None
-        search_term = search_term.replace("<@", "").replace(">", "").replace("!", "")
-        if search_term.isdigit(): 
-            return ctx.guild.get_member(int(search_term))
-        for m in ctx.guild.members:
-            if m.name.lower() == search_term.lower() or m.display_name.lower() == search_term.lower(): 
-                return m
-        return None
-
     # ==========================================
     # LISTENERS & EVENTS
     # ==========================================
@@ -144,7 +133,7 @@ class MasterCommands(commands.Cog):
                     await message.channel.send(reply[:2000])
                 except Exception as e: 
                     await message.channel.send(f"❌ AI Error: {e}")
-            return # Stop processing so XP is not given in DMs
+            return 
 
         # 2. AFK System
         if uid in db["afk"]:
@@ -235,16 +224,12 @@ class MasterCommands(commands.Cog):
     async def deployserver(self, ctx):
         await ctx.send("⚠️ **CLEAN SLATE PROTOCOL INITIATED.** Wiping the server and building the new layout. Please wait...")
         guild = ctx.guild
-        
-        # 1. Delete Channels
         for c in guild.channels:
             try: 
                 await c.delete()
                 await asyncio.sleep(0.5)
             except: 
                 pass
-                
-        # 2. Delete Roles
         for r in guild.roles:
             if r.name != "@everyone" and not r.managed and r < ctx.guild.me.top_role:
                 try: 
@@ -252,13 +237,7 @@ class MasterCommands(commands.Cog):
                     await asyncio.sleep(0.5)
                 except: 
                     pass
-                    
-        # 3. Create Roles
-        roles_to_make = [
-            {"name": "Admin", "color": discord.Color.red()}, 
-            {"name": "Moderator", "color": discord.Color.orange()}, 
-            {"name": "Jailed", "color": discord.Color.dark_grey()}
-        ]
+        roles_to_make = [{"name": "Admin", "color": discord.Color.red()}, {"name": "Moderator", "color": discord.Color.orange()}, {"name": "Jailed", "color": discord.Color.dark_grey()}]
         created_roles = {}
         for r in roles_to_make:
             try: 
@@ -267,27 +246,21 @@ class MasterCommands(commands.Cog):
                 await asyncio.sleep(1)
             except: 
                 pass
-                
-        # 4. Assign Admin Role
         try: 
             if "Admin" in created_roles:
                 await ctx.author.add_roles(created_roles["Admin"])
         except: 
             print("Failed to assign Admin role.")
 
-        # 5. Create Categories and Channels
         cat_info = await guild.create_category("📌 INFORMATION")
         await guild.create_text_channel("rules", category=cat_info)
-        
         cat_chat = await guild.create_category("💬 CHAT")
         gen_chat = await guild.create_text_channel("general", category=cat_chat)
         bot_cmds = await guild.create_text_channel("bot-commands", category=cat_chat)
         ai_chat = await guild.create_text_channel("talk-to-ai", category=cat_chat)
-        
         cat_voice = await guild.create_category("🔊 VOICE")
         await guild.create_voice_channel("General VC", category=cat_voice)
 
-        # 6. Apply Jail Permissions
         if "Jailed" in created_roles:
             for cat in guild.categories:
                 try: 
@@ -295,12 +268,10 @@ class MasterCommands(commands.Cog):
                 except: 
                     pass
 
-        # 7. Update Database
         db["config"]["cmd_channel"] = bot_cmds.id
         db["config"]["ai_channel"] = ai_chat.id
         db["config"]["event_channel"] = gen_chat.id
         save_db(db)
-        
         await gen_chat.send(f"{ctx.author.mention} ✅ **Deployment Complete.** Server is fully operational.")
 
     # ==========================================
@@ -311,36 +282,23 @@ class MasterCommands(commands.Cog):
     async def aicommand(self, ctx, *, instruction: str):
         if not self.client: 
             return await ctx.send("🤖 **AI is offline. Missing API Key.**")
-        
         await ctx.defer()
-        prompt = f"""
-        You are an omnipotent Discord bot. The server owner has commanded: "{instruction}"
-        Output a JSON array of actions to perform. 
-        Available Actions:
+        prompt = f"""You are an omnipotent Discord bot. The server owner has commanded: "{instruction}"
+        Output a JSON array of actions:
         1. Reply: {{"action": "reply", "message": "your text here"}}
         2. Execute Python: {{"action": "execute", "code": "await ctx.send('Task complete!')"}}
-        
-        STRICT RULES FOR PYTHON EXECUTE:
-        - Output ONLY a valid JSON array.
-        - You must write valid discord.py async code.
-        - You have access to: 'ctx', 'bot', 'discord', 'asyncio', 'db'.
-        - Add 'await asyncio.sleep(2)' between any bulk channel creations or edits to prevent rate limits.
-        """
-        
+        STRICT RULES: Output ONLY a valid JSON array. Write valid discord.py async code. Access: 'ctx', 'bot', 'discord', 'asyncio', 'db'."""
         try:
             raw_response = self.ask_groq([{"role": "user", "content": prompt}])
             start_idx = raw_response.find('[')
             end_idx = raw_response.rfind(']')
-            
             if start_idx != -1 and end_idx != -1:
                 clean_json = raw_response[start_idx:end_idx+1]
             else:
                 clean_json = raw_response.replace('```json', '').replace('```python', '').replace('```', '').strip()
                 if clean_json.startswith('{'): 
                     clean_json = f"[{clean_json}]"
-                    
             actions = json.loads(clean_json)
-            
             for act in actions:
                 atype = act.get("action")
                 if atype == "reply": 
@@ -352,15 +310,7 @@ class MasterCommands(commands.Cog):
                         wrapped_code = "async def __ai_exec():\n"
                         for line in code_lines:
                             wrapped_code += f"    {line}\n"
-                            
-                        exec_env = {
-                            'discord': discord, 
-                            'bot': self.bot, 
-                            'ctx': ctx, 
-                            'asyncio': asyncio, 
-                            'db': db
-                        }
-                        
+                        exec_env = {'discord': discord, 'bot': self.bot, 'ctx': ctx, 'asyncio': asyncio, 'db': db}
                         exec(wrapped_code, exec_env)
                         await exec_env['__ai_exec']()
                         await status_msg.edit(content="✅ **AI Code Execution Successful!**")
@@ -374,11 +324,7 @@ class MasterCommands(commands.Cog):
     async def forceevent(self, ctx): 
         if not self.client: return await ctx.send("AI is offline.")
         await ctx.defer()
-        embed = discord.Embed(
-            title="🌟 Forced Server Event", 
-            description=self.ask_groq([{"role": "user", "content": "Generate a modern Discord event or question to spark chat."}]), 
-            color=discord.Color.blurple()
-        )
+        embed = discord.Embed(title="🌟 Forced Server Event", description=self.ask_groq([{"role": "user", "content": "Generate a modern Discord event or question to spark chat."}]), color=discord.Color.blurple())
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="tldr", description="AI summarizes the last 50 messages.")
@@ -439,10 +385,7 @@ class MasterCommands(commands.Cog):
     async def debate(self, ctx, *, topic: str): 
         if not self.client: return await ctx.send("AI offline.")
         await ctx.defer()
-        reply = self.ask_groq([
-            {"role": "system", "content": "You are a master debater. You must take the opposite stance of the user and passionately argue against them."}, 
-            {"role": "user", "content": topic}
-        ])
+        reply = self.ask_groq([{"role": "system", "content": "You are a master debater. You must take the opposite stance of the user and passionately argue against them."}, {"role": "user", "content": topic}])
         await ctx.send(f"⚖️ **Debating:** *{topic}*\n\n{reply}")
 
     @commands.hybrid_command(name="bossfight", description="AI generates a text-based boss fight.")
@@ -584,7 +527,6 @@ class MasterCommands(commands.Cog):
         logs = [e async for e in ctx.guild.audit_logs(limit=10, user=member)]
         if not logs: 
             return await ctx.send(f"No recent audit log actions found for {member.name}.")
-        
         res = "```\n--- Recent Audit Actions ---\n"
         for e in logs:
             res += f"- {e.action} on {e.target} at {e.created_at.strftime('%Y-%m-%d %H:%M')}\n"
@@ -693,7 +635,6 @@ class MasterCommands(commands.Cog):
                 await member.remove_roles(r)
             except: 
                 pass
-                
         jail_role = discord.utils.get(ctx.guild.roles, name="Jailed")
         if jail_role: 
             await member.add_roles(jail_role)
@@ -707,14 +648,12 @@ class MasterCommands(commands.Cog):
         jail_role = discord.utils.get(ctx.guild.roles, name="Jailed")
         if jail_role and jail_role in member.roles: 
             await member.remove_roles(jail_role)
-            
         old_roles = db["jailed"].pop(str(member.id), [])
         for r_id in old_roles:
             role = ctx.guild.get_role(r_id)
             if role: 
                 try: await member.add_roles(role)
                 except: pass
-                
         save_db(db)
         await ctx.send(f"🔓 **{member.mention} made bail and is released.**")
 
@@ -773,10 +712,8 @@ class MasterCommands(commands.Cog):
     async def rob(self, ctx, member: discord.Member):
         uid = str(ctx.author.id)
         tid = str(member.id)
-        
         if db["economy"].get(tid, 0) < 500: 
             return await ctx.send(f"❌ **{member.name} is too poor to rob. Leave them alone!**")
-            
         if random.choice([True, False]): 
             stolen = random.randint(100, int(db["economy"][tid] * 0.25))
             db["economy"][tid] -= stolen
@@ -801,13 +738,10 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         if db["economy"].get(uid, 0) < bet or bet <= 0: 
             return await ctx.send("❌ **You don't have enough coins to place that bet.**")
-            
         db["economy"][uid] -= bet
         reels = ["🍒", "🍋", "💎", "⭐", "🔔"]
         r1, r2, r3 = random.choice(reels), random.choice(reels), random.choice(reels)
-        
         msg = f"🎰 **SLOTS** 🎰\n| {r1} | {r2} | {r3} |\n"
-        
         if r1 == r2 == r3: 
             winnings = bet * 10
             db["economy"][uid] += winnings
@@ -825,11 +759,9 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         if db["economy"].get(uid, 0) < bet or bet <= 0: 
             return await ctx.send("❌ **Not enough coins.**")
-            
         db["economy"][uid] -= bet
         player_score = random.randint(15, 25)
         bot_score = random.randint(17, 23)
-        
         if player_score > 21: 
             await ctx.send(f"🃏 **Bust!** You drew {player_score}. Bot had {bot_score}. You lose.")
         elif player_score > bot_score or bot_score > 21: 
@@ -846,10 +778,8 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         if db["economy"].get(uid, 0) < bet or bet <= 0: 
             return await ctx.send("❌ **Not enough coins.**")
-            
         db["economy"][uid] -= bet
         result = random.choice(["heads", "tails"])
-        
         if choice.lower() == result: 
             db["economy"][uid] += bet * 2
             await ctx.send(f"🪙 **It landed on {result.capitalize()}!** You won **{bet*2} coins!**")
@@ -870,12 +800,10 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         prices = {"sword": 500, "shield": 1000, "dragon egg": 5000}
         item = item.lower()
-        
         if item not in prices: 
             return await ctx.send("❌ **That item is not in the shop.**")
         if db["economy"].get(uid, 0) < prices[item]: 
             return await ctx.send("❌ **You cannot afford that item.**")
-            
         db["economy"][uid] -= prices[item]
         if uid not in db["inventory"]: 
             db["inventory"][uid] = []
@@ -896,7 +824,6 @@ class MasterCommands(commands.Cog):
         tid = str(member.id)
         if db["economy"].get(uid, 0) < amount or amount <= 0: 
             return await ctx.send("❌ **Insufficient funds.**")
-            
         db["economy"][uid] -= amount
         db["economy"][tid] = db["economy"].get(tid, 0) + amount
         save_db(db)
@@ -916,7 +843,6 @@ class MasterCommands(commands.Cog):
         fish_types = ["Old Boot", "Common Carp", "Rare Salmon", "Legendary Shark"]
         fish = random.choice(fish_types)
         reward = {"Old Boot": 0, "Common Carp": 50, "Rare Salmon": 200, "Legendary Shark": 1000}[fish]
-        
         db["economy"][str(ctx.author.id)] = db["economy"].get(str(ctx.author.id), 0) + reward
         save_db(db)
         await ctx.send(f"🎣 **You cast your line and caught a {fish}!** Sold for {reward} coins.")
@@ -927,7 +853,6 @@ class MasterCommands(commands.Cog):
         mobs = ["Mutant Rat", "Forest Goblin", "Shadow Dragon"]
         mob = random.choice(mobs)
         reward = {"Mutant Rat": 20, "Forest Goblin": 150, "Shadow Dragon": 1500}[mob]
-        
         db["economy"][str(ctx.author.id)] = db["economy"].get(str(ctx.author.id), 0) + reward
         save_db(db)
         await ctx.send(f"🏹 **You ventured into the woods and slayed a {mob}!** Claimed {reward} coins.")
@@ -938,7 +863,6 @@ class MasterCommands(commands.Cog):
         ores = ["Stone", "Iron Ore", "Raw Diamond"]
         ore = random.choice(ores)
         reward = {"Stone": 5, "Iron Ore": 80, "Raw Diamond": 1200}[ore]
-        
         db["economy"][str(ctx.author.id)] = db["economy"].get(str(ctx.author.id), 0) + reward
         save_db(db)
         await ctx.send(f"⛏️ **You swung your pickaxe and mined {ore}!** Sold for {reward} coins.")
@@ -949,11 +873,9 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         if uid not in db["levels"]: 
             db["levels"][uid] = {"xp": 0, "level": 1}
-            
         current_lvl = db["levels"][uid]["level"]
         if current_lvl >= 13000: 
-            return await ctx.send("🛑 **Max Level 13,000 Reached!** You are already a god. The quests offer you nothing.")
-            
+            return await ctx.send("🛑 **Max Level 13,000 Reached!** You are already a god.")
         xp_gain = random.randint(300, 800)
         db["levels"][uid]["xp"] += xp_gain
         save_db(db)
@@ -964,13 +886,10 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         tid = str(member.id)
         item = item.lower()
-        
         if item not in db.get("inventory", {}).get(uid, []): 
             return await ctx.send("❌ **You do not own this item.**")
-            
         if tid not in db["inventory"]: 
             db["inventory"][tid] = []
-            
         db["inventory"][uid].remove(item)
         db["inventory"][tid].append(item)
         save_db(db)
@@ -981,7 +900,6 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         if db["economy"].get(uid, 0) < amount or amount <= 0: 
             return await ctx.send("❌ **Not enough coins to set this bounty.**")
-            
         db["economy"][uid] -= amount
         db["bounties"][str(member.id)] = db.get("bounties", {}).get(str(member.id), 0) + amount
         save_db(db)
@@ -992,197 +910,15 @@ class MasterCommands(commands.Cog):
         uid = str(ctx.author.id)
         tid = str(member.id)
         bounty_amount = db.get("bounties", {}).get(tid, 0)
-        
         if bounty_amount <= 0: 
             return await ctx.send("❌ **That user does not have a bounty on their head.**")
-            
         db["bounties"][tid] = 0
         db["economy"][uid] = db["economy"].get(uid, 0) + bounty_amount
         save_db(db)
         await ctx.send(f"🔪 **Bounty Claimed!** You hunted down {member.name} and collected the **{bounty_amount} coin** reward!")
 
     # ==========================================
-    # FUN & TROLLING (Pure Chaos)
-    # ==========================================
-    @commands.hybrid_command(name="fakeban", description="Sends a terrifying fake ban message.")
-    async def fakeban(self, ctx, member: discord.Member): 
-        embed = discord.Embed(title="User Banned", description=f"🔨 **{member.name}** has been permanently banned from the server.\n\n*Reason: Caught lacking.*", color=discord.Color.red())
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="rickroll", description="Sends a disguised DM to a user.")
-    async def rickroll(self, ctx, member: discord.Member):
-        try: 
-            await member.send("🎁 **You have been gifted Discord Nitro!** Claim it here: [https://www.youtube.com/watch?v=dQw4w9WgXcQ](https://www.youtube.com/watch?v=dQw4w9WgXcQ)")
-            await ctx.send(f"🤫 **Successfully sent a disguised package to {member.name}.**")
-        except: 
-            await ctx.send("❌ **Their DMs are closed.**")
-
-    @commands.hybrid_command(name="howgay", description="Calculates a random percentage.")
-    async def howgay(self, ctx, member: discord.Member=None): 
-        target = member or ctx.author
-        await ctx.send(f"🏳️‍🌈 **{target.name}** is **{random.randint(0,100)}%** gay.")
-
-    @commands.hybrid_command(name="simpmeter", description="Calculates simp percentage.")
-    async def simpmeter(self, ctx, member: discord.Member=None): 
-        target = member or ctx.author
-        await ctx.send(f"😳 **{target.name}** is a **{random.randint(0,100)}%** simp.")
-
-    @commands.hybrid_command(name="susmeter", description="Calculates sus percentage.")
-    async def susmeter(self, ctx, member: discord.Member=None): 
-        target = member or ctx.author
-        await ctx.send(f"📮 **{target.name}** is **{random.randint(0,100)}%** sus.")
-
-    @commands.hybrid_command(name="roast", description="Drops a brutal, pre-written roast.")
-    async def roast(self, ctx, member: discord.Member):
-        roasts = [
-            "You're like a cloud. When you disappear, it's a beautiful day.", 
-            "I'd agree with you but then we’d both be wrong.",
-            "You bring everyone so much joy when you leave the room.",
-            "If laughter is the best medicine, your face must be curing the world."
-        ]
-        await ctx.send(f"{member.mention} 🔥 {random.choice(roasts)}")
-
-    @commands.hybrid_command(name="compliment", description="Says something genuinely nice.")
-    async def compliment(self, ctx, member: discord.Member):
-        comps = [
-            "You have a great sense of humor!", 
-            "You light up the room!",
-            "You are absolutely glowing today.",
-            "You're more helpful than you realize."
-        ]
-        await ctx.send(f"💖 {member.mention} {random.choice(comps)}")
-
-    @commands.hybrid_command(name="confess", description="Sends an anonymous confession.")
-    async def confess(self, ctx, *, message: str): 
-        try:
-            await ctx.message.delete()
-        except:
-            pass
-        embed = discord.Embed(title="🤫 Anonymous Confession", description=message, color=discord.Color.dark_theme())
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="kill", description="Generates a funny death message.")
-    async def kill(self, ctx, member: discord.Member):
-        deaths = [
-            "fell out of the world.", 
-            "was obliterated by a rogue AI.", 
-            "forgot how to breathe.",
-            "was crushed by a falling anvil."
-        ]
-        await ctx.send(f"☠️ **{member.name}** {random.choice(deaths)}")
-
-    @commands.hybrid_command(name="revive", description="Brings a user back to life.")
-    async def revive(self, ctx, member: discord.Member): 
-        await ctx.send(f"👼 **{member.name} has been resurrected from the dead!**")
-
-    @commands.hybrid_command(name="meme", description="Pulls a meme.")
-    async def meme(self, ctx): 
-        await ctx.send("😂 *Imagine a really funny, high-quality meme right here.* (API integration placeholder)")
-
-    @commands.hybrid_command(name="dadjoke", description="Tells a terrible dad joke.")
-    async def dadjoke(self, ctx):
-        jokes = [
-            "I'm afraid for the calendar. Its days are numbered.", 
-            "Why do fathers take an extra pair of socks when they go golfing? In case they get a hole in one!",
-            "I thought the dryer was shrinking my clothes. Turns out it was the refrigerator."
-        ]
-        await ctx.send(f"🧔 **Dad Joke:** {random.choice(jokes)}")
-
-    @commands.hybrid_command(name="choose", description="Forces the bot to make a decision.")
-    async def choose(self, ctx, option1: str, option2: str): 
-        await ctx.send(f"🤔 **I choose...** `{random.choice([option1, option2])}`")
-
-    @commands.hybrid_command(name="spank", description="Exactly what it sounds like.")
-    async def spank(self, ctx, member: discord.Member): 
-        await ctx.send(f"🤚 **{ctx.author.name} viciously spanked {member.name}!**")
-
-    @commands.hybrid_command(name="jailbreak", description="Attempt to break a friend out of jail.")
-    async def jailbreak(self, ctx, member: discord.Member):
-        if random.randint(1, 10) <= 2: # 20% chance
-            jail_role = discord.utils.get(ctx.guild.roles, name="Jailed")
-            if jail_role and jail_role in member.roles: 
-                await member.remove_roles(jail_role)
-                await ctx.send(f"🔓 **SUCCESS!** {ctx.author.name} broke {member.name} out of federal prison!")
-            else:
-                await ctx.send(f"{member.name} isn't in jail!")
-        else: 
-            await ctx.send("❌ **Jailbreak failed.** The guards caught you trying to sneak in.")
-
-    @commands.hybrid_command(name="eightball", description="Ask the magic 8-ball a question.")
-    async def eightball(self, ctx, *, question: str): 
-        res = random.choice(["Yes, definitely.", "No.", "Maybe.", "Definitely not.", "Without a doubt.", "Ask again later."])
-        await ctx.send(f"🎱 **Question:** {question}\n**Answer:** {res}")
-
-    @commands.hybrid_command(name="hack", description="Fake hack a user.")
-    async def hack(self, ctx, member: discord.Member): 
-        msg = await ctx.send(f"💻 **Hacking {member.name}...**")
-        await asyncio.sleep(2)
-        await msg.edit(content="🕵️‍♂️ Finding IP Address...")
-        await asyncio.sleep(2)
-        await msg.edit(content=f"✅ **Successfully hacked {member.mention}.** Selling their search history for 5 robux.")
-
-    @commands.hybrid_command(name="ship", description="Matchmake two people.")
-    async def ship(self, ctx, m1: discord.Member, m2: discord.Member=None): 
-        target2 = m2 or ctx.author
-        rating = random.randint(0, 100)
-        await ctx.send(f"❤️ **Ship Matchmaker:**\n{m1.name} x {target2.name} \n**Compatibility:** {rating}%")
-
-    # ==========================================
-    # 🎭 ANIME & ACTION ROLEPLAY
-    # ==========================================
-    @commands.hybrid_command(name="pat", description="Sends an anime headpat.")
-    async def pat(self, ctx, member: discord.Member): 
-        await ctx.send(f"🤚 **{ctx.author.name} gently patted {member.name} on the head!**")
-    
-    @commands.hybrid_command(name="punch", description="Sends an anime punch.")
-    async def punch(self, ctx, member: discord.Member): 
-        await ctx.send(f"👊 **{ctx.author.name} totally decked {member.name}!**")
-
-    @commands.hybrid_command(name="bite", description="Sends an anime bite.")
-    async def bite(self, ctx, member: discord.Member): 
-        await ctx.send(f"🧛 **{ctx.author.name} bit {member.name}!**")
-
-    @commands.hybrid_command(name="kiss", description="Sends an anime kiss.")
-    async def kiss(self, ctx, member: discord.Member): 
-        await ctx.send(f"💋 **{ctx.author.name} gave {member.name} a kiss!**")
-
-    @commands.hybrid_command(name="smug", description="Smug anime face.")
-    async def smug(self, ctx): 
-        await ctx.send(f"😏 **{ctx.author.name} is looking extremely smug.**")
-
-    @commands.hybrid_command(name="cry", description="Anime crying.")
-    async def cry(self, ctx): 
-        await ctx.send(f"😭 **{ctx.author.name} is crying in the corner.**")
-
-    @commands.hybrid_command(name="quote", description="Drops an epic dark fantasy quote.")
-    async def quote(self, ctx):
-        quotes = [
-            "If you don't fight, you can't win.", 
-            "Since when were you under the impression that I wasn't using Kyoka Suigetsu?",
-            "The bird of Hermes is my name, eating my wings to make me tame.",
-            "Fear is not evil. It tells you what your weakness is."
-        ]
-        await ctx.send(f"📜 *\"{random.choice(quotes)}\"*")
-
-    @commands.hybrid_command(name="powerlevel", description="Scouters read their power level.")
-    async def powerlevel(self, ctx, member: discord.Member = None):
-        target = member or ctx.author
-        pwr = random.randint(10, 1000000)
-        if pwr > 900000: 
-            await ctx.send(f"💥 **{target.mention}'s power level is {pwr:,}!** They have the aura of Wang Lin! Run!")
-        else: 
-            await ctx.send(f"🔍 **{target.mention}'s power level is {pwr:,}.** Just absolute fodder.")
-
-    @commands.hybrid_command(name="domain_expansion", description="Traps the chat in your domain.")
-    async def domain_expansion(self, ctx): 
-        await ctx.send(f"🤞 **Domain Expansion!** {ctx.author.mention} has trapped everyone in their domain!")
-
-    @commands.hybrid_command(name="bankai", description="Unleashes your ultimate move.")
-    async def bankai(self, ctx): 
-        await ctx.send(f"⚔️ **BANKAI!** {ctx.author.mention}'s spiritual pressure is crushing the server!")
-
-    # ==========================================
-    # ⭐ LEVELING, REPUTATION & UTILITY
+    # LEVELING, REPUTATION & UTILITY
     # ==========================================
     @commands.hybrid_command(name="rank", description="Check XP Level.")
     async def rank(self, ctx, member: discord.Member = None): 
@@ -1306,7 +1042,6 @@ class MasterCommands(commands.Cog):
     @commands.hybrid_command(name="calc", description="Built-in calculator.")
     async def calc(self, ctx, expression: str):
         try: 
-            # Very basic and safe eval wrapper
             result = eval(expression, {'__builtins__': None}, {})
             await ctx.send(f"🧮 **Result:** `{result}`")
         except: 
@@ -1365,55 +1100,166 @@ class MasterCommands(commands.Cog):
         await ctx.send(embed=embed)
 
     # ==========================================
-    # 🎵 VOICE & MEDIA
+    # FUN & TROLLING (PREFIX COMMANDS)
     # ==========================================
-    @commands.hybrid_command(name="join", description="Forces the bot to join your voice channel.")
-    async def join(self, ctx): 
-        if not ctx.author.voice: 
-            return await ctx.send("❌ **You must be in a voice channel first.**")
-        channel = ctx.author.voice.channel
-        await channel.connect()
-        await ctx.send(f"🔊 **Joined {channel.name}.**")
+    @commands.command(name="fakeban")
+    async def fakeban(self, ctx, member: discord.Member): 
+        embed = discord.Embed(title="User Banned", description=f"🔨 **{member.name}** has been permanently banned from the server.\n\n*Reason: Caught lacking.*", color=discord.Color.red())
+        await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="leave", description="Kicks the bot out of the voice channel.")
-    async def leave(self, ctx): 
-        if ctx.voice_client: 
-            await ctx.voice_client.disconnect()
-            await ctx.send("👋 **Disconnected from Voice Chat.**")
-        else:
-            await ctx.send("I am not currently in a voice channel.")
+    @commands.command(name="rickroll")
+    async def rickroll(self, ctx, member: discord.Member):
+        try: 
+            await member.send("🎁 **You have been gifted Discord Nitro!** Claim it here: [https://www.youtube.com/watch?v=dQw4w9WgXcQ](https://www.youtube.com/watch?v=dQw4w9WgXcQ)")
+            await ctx.send(f"🤫 **Successfully sent a disguised package to {member.name}.**")
+        except: 
+            await ctx.send("❌ **Their DMs are closed.**")
 
-    @commands.hybrid_command(name="play", description="Plays music from YouTube/Spotify.")
-    async def play(self, ctx, song: str): 
-        await ctx.send(f"🎶 **Searching and queuing:** '{song}'\n*(Note: Requires FFmpeg and PyNaCl packages installed on host to broadcast audio).*")
+    @commands.command(name="howgay")
+    async def howgay(self, ctx, member: discord.Member=None): 
+        target = member or ctx.author
+        await ctx.send(f"🏳️‍🌈 **{target.name}** is **{random.randint(0,100)}%** gay.")
 
-    @commands.hybrid_command(name="skip", description="Skips the current song.")
-    async def skip(self, ctx): 
-        await ctx.send("⏭️ **Skipped current track.**")
+    @commands.command(name="simpmeter")
+    async def simpmeter(self, ctx, member: discord.Member=None): 
+        target = member or ctx.author
+        await ctx.send(f"😳 **{target.name}** is a **{random.randint(0,100)}%** simp.")
 
-    @commands.hybrid_command(name="queue", description="Shows the upcoming songs.")
-    async def queue(self, ctx): 
-        await ctx.send("📜 **Music Queue is currently empty.**")
+    @commands.command(name="susmeter")
+    async def susmeter(self, ctx, member: discord.Member=None): 
+        target = member or ctx.author
+        await ctx.send(f"📮 **{target.name}** is **{random.randint(0,100)}%** sus.")
 
-    @commands.hybrid_command(name="stop", description="Stops music and clears queue.")
-    async def stop(self, ctx): 
-        await ctx.send("🛑 **Stopped music and cleared the queue.**")
+    @commands.command(name="roast")
+    async def roast(self, ctx, member: discord.Member):
+        roasts = [
+            "You're like a cloud. When you disappear, it's a beautiful day.", 
+            "I'd agree with you but then we’d both be wrong.",
+            "If laughter is the best medicine, your face must be curing the world."
+        ]
+        await ctx.send(f"{member.mention} 🔥 {random.choice(roasts)}")
 
-    @commands.hybrid_command(name="volume", description="Changes the music volume.")
-    async def volume(self, ctx, vol: int): 
-        await ctx.send(f"🔊 **Volume set to {vol}%.**")
+    @commands.command(name="compliment")
+    async def compliment(self, ctx, member: discord.Member):
+        comps = ["You have a great sense of humor!", "You light up the room!", "You are glowing today."]
+        await ctx.send(f"💖 {member.mention} {random.choice(comps)}")
 
-    @commands.hybrid_command(name="earrape", description="Bass boosts the music to 500%.")
-    async def earrape(self, ctx): 
-        await ctx.send("💥 **Volume forced to 500%. WARNING: LOUD.**")
+    @commands.command(name="confess")
+    async def confess(self, ctx, *, message: str): 
+        try: await ctx.message.delete()
+        except: pass
+        embed = discord.Embed(title="🤫 Anonymous Confession", description=message, color=discord.Color.dark_theme())
+        await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="soundboard", description="Plays a sound bite.")
-    async def soundboard(self, ctx, sound: str): 
-        await ctx.send(f"🔊 **Playing '{sound}' sound effect.**")
+    @commands.command(name="kill")
+    async def kill(self, ctx, member: discord.Member):
+        deaths = ["fell out of the world.", "was obliterated by a rogue AI.", "was crushed by a falling anvil."]
+        await ctx.send(f"☠️ **{member.name}** {random.choice(deaths)}")
 
-    @commands.hybrid_command(name="tts", description="Text-to-speech in VC.")
-    async def tts(self, ctx, *, message: str): 
-        await ctx.send(f"🗣️ **TTS Reading:** {message}")
+    @commands.command(name="revive")
+    async def revive(self, ctx, member: discord.Member): 
+        await ctx.send(f"👼 **{member.name} has been resurrected from the dead!**")
+
+    @commands.command(name="meme")
+    async def meme(self, ctx): 
+        await ctx.send("😂 *Imagine a really funny, high-quality meme right here.* (API integration placeholder)")
+
+    @commands.command(name="dadjoke")
+    async def dadjoke(self, ctx):
+        jokes = ["I'm afraid for the calendar. Its days are numbered.", "I thought the dryer was shrinking my clothes. Turns out it was the refrigerator."]
+        await ctx.send(f"🧔 **Dad Joke:** {random.choice(jokes)}")
+
+    @commands.command(name="choose")
+    async def choose(self, ctx, option1: str, option2: str): 
+        await ctx.send(f"🤔 **I choose...** `{random.choice([option1, option2])}`")
+
+    @commands.command(name="spank")
+    async def spank(self, ctx, member: discord.Member): 
+        await ctx.send(f"🤚 **{ctx.author.name} viciously spanked {member.name}!**")
+
+    @commands.command(name="jailbreak")
+    async def jailbreak(self, ctx, member: discord.Member):
+        if random.randint(1, 10) <= 2: 
+            jail_role = discord.utils.get(ctx.guild.roles, name="Jailed")
+            if jail_role and jail_role in member.roles: 
+                await member.remove_roles(jail_role)
+                await ctx.send(f"🔓 **SUCCESS!** {ctx.author.name} broke {member.name} out of federal prison!")
+            else:
+                await ctx.send(f"{member.name} isn't in jail!")
+        else: 
+            await ctx.send("❌ **Jailbreak failed.** The guards caught you trying to sneak in.")
+
+    @commands.command(name="eightball")
+    async def eightball(self, ctx, *, question: str): 
+        res = random.choice(["Yes, definitely.", "No.", "Maybe.", "Definitely not.", "Without a doubt.", "Ask again later."])
+        await ctx.send(f"🎱 **Question:** {question}\n**Answer:** {res}")
+
+    @commands.command(name="hack")
+    async def hack(self, ctx, member: discord.Member): 
+        msg = await ctx.send(f"💻 **Hacking {member.name}...**")
+        await asyncio.sleep(2)
+        await msg.edit(content="🕵️‍♂️ Finding IP Address...")
+        await asyncio.sleep(2)
+        await msg.edit(content=f"✅ **Successfully hacked {member.mention}.** Selling their search history for 5 robux.")
+
+    @commands.command(name="ship")
+    async def ship(self, ctx, m1: discord.Member, m2: discord.Member=None): 
+        target2 = m2 or ctx.author
+        rating = random.randint(0, 100)
+        await ctx.send(f"❤️ **Ship Matchmaker:**\n{m1.name} x {target2.name} \n**Compatibility:** {rating}%")
+
+    # ==========================================
+    # 🎭 ANIME & ACTION ROLEPLAY (PREFIX)
+    # ==========================================
+    @commands.command(name="pat")
+    async def pat(self, ctx, member: discord.Member): 
+        await ctx.send(f"🤚 **{ctx.author.name} gently patted {member.name} on the head!**")
+    
+    @commands.command(name="punch")
+    async def punch(self, ctx, member: discord.Member): 
+        await ctx.send(f"👊 **{ctx.author.name} totally decked {member.name}!**")
+
+    @commands.command(name="bite")
+    async def bite(self, ctx, member: discord.Member): 
+        await ctx.send(f"🧛 **{ctx.author.name} bit {member.name}!**")
+
+    @commands.command(name="kiss")
+    async def kiss(self, ctx, member: discord.Member): 
+        await ctx.send(f"💋 **{ctx.author.name} gave {member.name} a kiss!**")
+
+    @commands.command(name="smug")
+    async def smug(self, ctx): 
+        await ctx.send(f"😏 **{ctx.author.name} is looking extremely smug.**")
+
+    @commands.command(name="cry")
+    async def cry(self, ctx): 
+        await ctx.send(f"😭 **{ctx.author.name} is crying in the corner.**")
+
+    @commands.command(name="quote")
+    async def quote(self, ctx):
+        quotes = [
+            "If you don't fight, you can't win.", 
+            "Since when were you under the impression that I wasn't using Kyoka Suigetsu?",
+            "The bird of Hermes is my name, eating my wings to make me tame."
+        ]
+        await ctx.send(f"📜 *\"{random.choice(quotes)}\"*")
+
+    @commands.command(name="powerlevel")
+    async def powerlevel(self, ctx, member: discord.Member = None):
+        target = member or ctx.author
+        pwr = random.randint(10, 1000000)
+        if pwr > 900000: 
+            await ctx.send(f"💥 **{target.mention}'s power level is {pwr:,}!** They have the aura of Wang Lin! Run!")
+        else: 
+            await ctx.send(f"🔍 **{target.mention}'s power level is {pwr:,}.** Just absolute fodder.")
+
+    @commands.command(name="domain_expansion")
+    async def domain_expansion(self, ctx): 
+        await ctx.send(f"🤞 **Domain Expansion!** {ctx.author.mention} has trapped everyone in their domain!")
+
+    @commands.command(name="bankai")
+    async def bankai(self, ctx): 
+        await ctx.send(f"⚔️ **BANKAI!** {ctx.author.mention}'s spiritual pressure is crushing the server!")
 
 # ==========================================
 # FINAL SETUP SINK
