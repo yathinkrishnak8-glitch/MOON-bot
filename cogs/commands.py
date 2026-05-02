@@ -25,7 +25,7 @@ def get_default_db():
         "inventory": {}, 
         "rep": {}, 
         "bounties": {},
-        "current_shop": [] # Stores the dynamic shop items
+        "current_shop": [] # Stores dynamic shop items
     }
 
 def load_db():
@@ -41,17 +41,40 @@ snipes = {}
 edit_snipes = {}
 
 # ==========================================
-# INTERACTIVE UI PANELS (Buttons & Menus)
+# INTERACTIVE UI: DYNAMIC SHOP
 # ==========================================
-class BossFightView(discord.ui.View):
-    def __init__(self, ctx, boss_name, boss_hp):
-        super().__init__(timeout=60)
+class BuyButton(discord.ui.Button):
+    def __init__(self, item):
+        super().__init__(label=f"Buy {item['name']} ({item['price']:,})", style=discord.ButtonStyle.success)
+        self.item = item
+
+    async def callback(self, interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        if db["economy"].get(uid, 0) < self.item["price"]:
+            return await interaction.response.send_message(f"❌ You don't have enough coins for **{self.item['name']}**.", ephemeral=True)
+            
+        db["economy"][uid] -= self.item["price"]
+        if uid not in db["inventory"]: db["inventory"][uid] = []
+        db["inventory"][uid].append(self.item["name"])
+        save_db(db)
+        
+        await interaction.response.send_message(f"✅ **Transaction Successful!** You bought **{self.item['name']}**.", ephemeral=True)
+
+class DynamicShopView(discord.ui.View):
+    def __init__(self, shop_items):
+        super().__init__(timeout=300)
+        for item in shop_items:
+            self.add_item(BuyButton(item))
+
+# ==========================================
+# INTERACTIVE UI: AI DUNGEON MASTER
+# ==========================================
+class AIBossFightView(discord.ui.View):
+    def __init__(self, ctx, ai_client, chat_history):
+        super().__init__(timeout=120)
         self.ctx = ctx
-        self.boss_name = boss_name
-        self.boss_hp = boss_hp
-        self.boss_max_hp = boss_hp
-        self.player_hp = 1000
-        self.player_max_hp = 1000
+        self.ai_client = ai_client
+        self.chat_history = chat_history # Stores the ongoing story
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user != self.ctx.author:
@@ -59,85 +82,62 @@ class BossFightView(discord.ui.View):
             return False
         return True
 
-    def generate_embed(self):
-        embed = discord.Embed(title=f"⚔️ BOSS FIGHT: {self.boss_name}", color=discord.Color.dark_red())
-        embed.add_field(name=f"👹 {self.boss_name} HP", value=f"{self.boss_hp} / {self.boss_max_hp}", inline=True)
-        embed.add_field(name=f"🛡️ {self.ctx.author.name} HP", value=f"{self.player_hp} / {self.player_max_hp}", inline=True)
-        return embed
+    async def process_turn(self, interaction: discord.Interaction, action: str):
+        await interaction.response.defer()
+        
+        # Tell the AI what the player did
+        self.chat_history.append({"role": "user", "content": f"I choose to: {action}. Describe the outcome of my action, the boss's counter-attack, and the environment. Keep it under 100 words. At the very end of your response, output exactly '[CONTINUE]', '[WIN]', or '[LOSE]' so the system knows the battle state."})
+        
+        # Ask Groq to generate the next phase of the fight
+        try:
+            response = self.ai_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=self.chat_history
+            ).choices[0].message.content.strip()
+        except:
+            return await interaction.edit_original_response(content="❌ AI Dungeon Master disconnected. Fight aborted.")
 
-    @discord.ui.button(label="Attack 🗡️", style=discord.ButtonStyle.danger)
-    async def attack_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        dmg = random.randint(150, 400)
-        boss_dmg = random.randint(100, 300)
-        
-        self.boss_hp -= dmg
-        self.player_hp -= boss_dmg
-        
-        if self.boss_hp <= 0:
+        self.chat_history.append({"role": "assistant", "content": response})
+
+        # Check win/loss conditions written by AI
+        if "[WIN]" in response.upper():
+            clean_text = response.replace("[WIN]", "").replace("[win]", "").strip()
             reward = random.randint(500000, 2000000)
             db["economy"][str(self.ctx.author.id)] = db["economy"].get(str(self.ctx.author.id), 0) + reward
             save_db(db)
-            win_embed = discord.Embed(title="🏆 BOSS DEFEATED!", description=f"You dealt a fatal blow of {dmg} DMG!\n\n**Reward:** {reward:,} Coins!", color=discord.Color.gold())
+            
+            embed = discord.Embed(title="🏆 BOSS SLAIN!", description=f"{clean_text}\n\n**Rewards Claimed:** {reward:,} Coins!", color=discord.Color.gold())
             for child in self.children: child.disabled = True
-            await interaction.response.edit_message(embed=win_embed, view=self)
-            return
-
-        if self.player_hp <= 0:
-            lose_embed = discord.Embed(title="💀 YOU DIED", description=f"{self.boss_name} crushed you with {boss_dmg} DMG. You lost the fight.", color=discord.Color.dark_grey())
+            await interaction.edit_original_response(embed=embed, view=self)
+            
+        elif "[LOSE]" in response.upper():
+            clean_text = response.replace("[LOSE]", "").replace("[lose]", "").strip()
+            embed = discord.Embed(title="💀 YOU DIED", description=clean_text, color=discord.Color.dark_red())
             for child in self.children: child.disabled = True
-            await interaction.response.edit_message(embed=lose_embed, view=self)
-            return
+            await interaction.edit_original_response(embed=embed, view=self)
+            
+        else:
+            clean_text = response.replace("[CONTINUE]", "").replace("[continue]", "").strip()
+            embed = discord.Embed(title="⚔️ BOSS FIGHT CONTINUES", description=clean_text, color=discord.Color.dark_theme())
+            await interaction.edit_original_response(embed=embed, view=self)
 
-        embed = self.generate_embed()
-        embed.description = f"You dealt **{dmg} DMG**!\n{self.boss_name} hit back for **{boss_dmg} DMG**!"
-        await interaction.response.edit_message(embed=embed, view=self)
+    @discord.ui.button(label="Attack 🗡️", style=discord.ButtonStyle.danger)
+    async def attack_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.process_turn(interaction, "Aggressively attack the boss with my weapon.")
 
-    @discord.ui.button(label="Heal 🧪", style=discord.ButtonStyle.success)
-    async def heal_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        heal = random.randint(200, 500)
-        boss_dmg = random.randint(100, 300)
-        
-        self.player_hp = min(self.player_max_hp, self.player_hp + heal)
-        self.player_hp -= boss_dmg
-        
-        if self.player_hp <= 0:
-            lose_embed = discord.Embed(title="💀 YOU DIED", description=f"You tried to heal, but {self.boss_name} executed you with {boss_dmg} DMG.", color=discord.Color.dark_grey())
-            for child in self.children: child.disabled = True
-            await interaction.response.edit_message(embed=lose_embed, view=self)
-            return
+    @discord.ui.button(label="Use Magic ✨", style=discord.ButtonStyle.primary)
+    async def magic_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.process_turn(interaction, "Cast a powerful offensive magic spell at the boss.")
 
-        embed = self.generate_embed()
-        embed.description = f"You healed for **{heal} HP**!\n{self.boss_name} attacked while you were healing for **{boss_dmg} DMG**!"
-        await interaction.response.edit_message(embed=embed, view=self)
+    @discord.ui.button(label="Defend 🛡️", style=discord.ButtonStyle.success)
+    async def defend_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.process_turn(interaction, "Take a defensive stance to block the next attack and look for an opening.")
 
     @discord.ui.button(label="Flee 🏃", style=discord.ButtonStyle.secondary)
     async def run_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(title="🏃 YOU FLED", description="You ran away from the boss like a coward.", color=discord.Color.light_grey())
         for child in self.children: child.disabled = True
         await interaction.response.edit_message(embed=embed, view=self)
-
-
-class MasterlistView(discord.ui.View):
-    def __init__(self, embeds):
-        super().__init__(timeout=120)
-        self.embeds = embeds
-        self.current_page = 0
-
-    @discord.ui.button(label="◀️ Previous", style=discord.ButtonStyle.primary, disabled=True)
-    async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_page -= 1
-        self.update_buttons()
-        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
-
-    @discord.ui.button(label="Next ▶️", style=discord.ButtonStyle.primary)
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current_page += 1
-        self.update_buttons()
-        await interaction.response.edit_message(embed=self.embeds[self.current_page], view=self)
-
-    def update_buttons(self):
-        self.children[0].disabled = self.current_page == 0
-        self.children[1].disabled = self.current_page == len(self.embeds) - 1
 
 class MasterCommands(commands.Cog):
     def __init__(self, bot):
@@ -159,11 +159,10 @@ class MasterCommands(commands.Cog):
         raise Exception("All AI models failed.")
 
     # ==========================================
-    # AUTO-LOOPS (Shop Refresh & AI Events)
+    # AUTO-LOOPS
     # ==========================================
     @tasks.loop(minutes=60)
     async def shop_refresh_loop(self):
-        # Massive pool of high-tier items in the Millions
         master_items = [
             {"name": "True Bankai Awakening", "price": 5000000, "desc": "Unlocks your ultimate soul reaper potential."},
             {"name": "Gomu Gomu no Mi", "price": 10000000, "desc": "A legendary devil fruit. Tastes terrible."},
@@ -175,12 +174,10 @@ class MasterCommands(commands.Cog):
             {"name": "Philosopher's Stone", "price": 15000000, "desc": "Equivalent exchange is a myth with this."}
         ]
         
-        # Pick 4 random items for the shop
         new_shop = random.sample(master_items, 4)
         db["current_shop"] = new_shop
         save_db(db)
         
-        # AI Event Drop for the restock
         if not self.client: return
         channel_id = db["config"].get("event_channel")
         if not channel_id: return
@@ -264,79 +261,158 @@ class MasterCommands(commands.Cog):
                 except: pass
 
     # ==========================================
-    # BEAUTIFUL COMMAND MASTERLIST
+    # CONFIG & SERVER DEPLOY
     # ==========================================
-    @commands.hybrid_command(name="masterlist", description="View all bot commands in an interactive panel.")
-    async def masterlist(self, ctx):
-        embeds = []
+    @commands.hybrid_command(name="setaichannel", description="Sets the AI auto-reply channel.")
+    @commands.has_permissions(administrator=True)
+    async def setaichannel(self, ctx): db["config"]["ai_channel"] = ctx.channel.id; save_db(db); await ctx.send(f"🤖 AI Chat bound to {ctx.channel.mention}")
+
+    @commands.hybrid_command(name="setcmdchannel", description="Locks commands to channel.")
+    @commands.has_permissions(administrator=True)
+    async def setcmdchannel(self, ctx): db["config"]["cmd_channel"] = ctx.channel.id; save_db(db); await ctx.send(f"🔒 Commands bound to {ctx.channel.mention}")
+
+    @commands.hybrid_command(name="seteventchannel", description="Sets AI event channel.")
+    @commands.has_permissions(administrator=True)
+    async def seteventchannel(self, ctx): db["config"]["event_channel"] = ctx.channel.id; save_db(db); await ctx.send(f"🌟 Events bound to {ctx.channel.mention}")
+
+    @commands.hybrid_command(name="deployserver", description="Wipes and builds server layout.")
+    @commands.has_permissions(administrator=True)
+    async def deployserver(self, ctx):
+        await ctx.send("⚠️ **CLEAN SLATE PROTOCOL.**")
+        for c in ctx.guild.channels:
+            try: await c.delete(); await asyncio.sleep(0.5)
+            except: pass
+        cr = {}
+        for r in [{"name": "Admin", "color": discord.Color.red()}, {"name": "Moderator", "color": discord.Color.orange()}, {"name": "Jailed", "color": discord.Color.dark_grey()}]:
+            try: cr[r["name"]] = await ctx.guild.create_role(name=r["name"], color=r["color"], permissions=discord.Permissions(administrator=(r["name"]=="Admin")), hoist=True); await asyncio.sleep(1)
+            except: pass
+        try: await ctx.author.add_roles(cr["Admin"])
+        except: pass
+        ci = await ctx.guild.create_category("📌 INFORMATION"); await ctx.guild.create_text_channel("rules", category=ci)
+        cc = await ctx.guild.create_category("💬 CHAT"); gc = await ctx.guild.create_text_channel("general", category=cc); bc = await ctx.guild.create_text_channel("bot-commands", category=cc); ac = await ctx.guild.create_text_channel("talk-to-ai", category=cc)
+        cv = await ctx.guild.create_category("🔊 VOICE"); await ctx.guild.create_voice_channel("General VC", category=cv)
+        for cat in ctx.guild.categories:
+            try: await cat.set_permissions(cr["Jailed"], read_messages=False)
+            except: pass
+        db["config"]["cmd_channel"] = bc.id; db["config"]["ai_channel"] = ac.id; db["config"]["event_channel"] = gc.id; save_db(db)
+        await gc.send(f"{ctx.author.mention} ✅ Deployment Complete.")
+
+
+    # ==========================================
+    # 🧠 AI UTILITIES & AI BOSS FIGHT
+    # ==========================================
+    @commands.hybrid_command(name='aicommand', description="Master AI brain. Execute any python code dynamically.")
+    @commands.has_permissions(administrator=True)
+    async def aicommand(self, ctx, *, instruction: str):
+        if not self.client: return await ctx.send("🤖 AI offline.")
+        await ctx.defer()
+        prompt = f"""Omnipotent bot. Output JSON array: 1. Reply: {{"action": "reply", "message": "text"}} 2. Execute Python: {{"action": "execute", "code": "await ctx.send('Done!')"}}
+        STRICT RULES: JSON ARRAY ONLY. Write discord.py async code. Access: 'ctx', 'bot', 'discord', 'asyncio', 'db'.\nInstruction: {instruction}"""
+        try:
+            raw = self.ask_groq([{"role": "user", "content": prompt}])
+            start_idx, end_idx = raw.find('['), raw.rfind(']')
+            clean_json = raw[start_idx:end_idx+1] if start_idx != -1 else raw.replace('```json', '').replace('```python', '').replace('```', '').strip()
+            if clean_json.startswith('{'): clean_json = f"[{clean_json}]"
+            for act in json.loads(clean_json):
+                if act.get("action") == "reply": await ctx.send(f"🤖 {act.get('message')}")
+                elif act.get("action") == "execute":
+                    msg = await ctx.send("⚡ **Executing Python...**")
+                    try:
+                        wrapped = f"async def __ai_exec():\n" + "\n".join([f"    {line}" for line in act.get("code", "").split("\n")])
+                        exec_env = {'discord': discord, 'bot': self.bot, 'ctx': ctx, 'asyncio': asyncio, 'db': db}
+                        exec(wrapped, exec_env); await exec_env['__ai_exec']()
+                        await msg.edit(content="✅ **Execution Successful!**")
+                    except Exception as err: await msg.edit(content=f"⚠️ **Failed:**\n```py\n{err}```")
+        except Exception as e: await ctx.send(f"❌ Error: {e}")
+
+    @commands.hybrid_command(name="bossfight", description="Start an interactive UI Boss Fight powered by AI.")
+    async def bossfight(self, ctx):
+        if not self.client: 
+            return await ctx.send(embed=discord.Embed(description="❌ AI is offline. The Dungeon Master is sleeping.", color=discord.Color.red()))
+        await ctx.defer()
         
-        e1 = discord.Embed(title="🤖 Masterlist: AI & Setup (Page 1/4)", color=discord.Color.blue())
-        e1.add_field(name="/deployserver", value="Wipes and builds a modern server layout.", inline=False)
-        e1.add_field(name="/aicommand", value="God-Mode AI executor.", inline=False)
-        e1.add_field(name="/define & /urban", value="AI-powered dictionaries.", inline=False)
-        e1.add_field(name="/lore & /bossfight", value="AI generates interactive lore and bosses.", inline=False)
-        e1.add_field(name="/vibecheck & /roast_history", value="AI analyzes user chats.", inline=False)
-        embeds.append(e1)
+        # 1. Ask AI to generate the scenario
+        setup_prompt = "You are an epic Dungeon Master. Generate the absolute beginning of a dark fantasy boss fight. Describe the terrifying boss appearing before the player. Keep it under 150 words. Do NOT resolve the fight yet. End with the boss preparing to strike."
+        
+        chat_history = [
+            {"role": "system", "content": "You are a ruthless Dungeon Master. The player will make choices. You must describe the outcome, the damage taken, and the environment. Keep responses under 100 words. At the end of every response, you must append '[CONTINUE]' if the fight goes on, '[WIN]' if the boss dies, or '[LOSE]' if the player dies."},
+            {"role": "user", "content": setup_prompt}
+        ]
+        
+        try:
+            scenario = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=chat_history
+            ).choices[0].message.content.strip()
+        except:
+            return await ctx.send("❌ Failed to connect to AI Dungeon Master.")
 
-        e2 = discord.Embed(title="🛡️ Masterlist: Moderation (Page 2/4)", color=discord.Color.red())
-        e2.add_field(name="/tempban & /tempmute", value="Temporary punishments.", inline=False)
-        e2.add_field(name="/lockdown & /unlockdown", value="Server security protocols.", inline=False)
-        e2.add_field(name="/snipe & /editsnipe", value="Catch deleted/edited messages.", inline=False)
-        e2.add_field(name="/jail & /unjail", value="Strips roles and locks user in jail.", inline=False)
-        e2.add_field(name="/warn & /warnings", value="Warning system.", inline=False)
-        embeds.append(e2)
+        # 2. Save the AI's response to the history so it remembers
+        chat_history.append({"role": "assistant", "content": scenario})
+        
+        # 3. Create the View and attach the memory
+        view = AIBossFightView(ctx, self.client, chat_history)
+        embed = discord.Embed(title="⚔️ BOSS ENCOUNTER", description=scenario, color=discord.Color.dark_red())
+        embed.set_footer(text="Choose your action below...")
+        await ctx.send(embed=embed, view=view)
 
-        e3 = discord.Embed(title="💰 Masterlist: RPG & Economy (Page 3/4)", color=discord.Color.gold())
-        e3.add_field(name="/shop & /buy", value="Dynamic million-coin artifact shop.", inline=False)
-        e3.add_field(name="/daily & /work & /crime", value="Earn massive amounts of coins.", inline=False)
-        e3.add_field(name="/slots & /blackjack & /coinflip", value="Gamble your millions.", inline=False)
-        e3.add_field(name="/heist & /rob", value="Steal from others.", inline=False)
-        e3.add_field(name="/level & /rank", value="Check your XP.", inline=False)
-        embeds.append(e3)
-
-        e4 = discord.Embed(title="🤡 Masterlist: Fun & Anime [PREFIX] (Page 4/4)", color=discord.Color.purple())
-        e4.add_field(name="!pat, !punch, !kiss, !bite", value="Anime roleplay actions.", inline=False)
-        e4.add_field(name="!fakeban & !rickroll", value="Troll your friends.", inline=False)
-        e4.add_field(name="!powerlevel & !domain_expansion", value="Weeb mechanics.", inline=False)
-        e4.add_field(name="!susmeter & !simpmeter", value="Rate users.", inline=False)
-        embeds.append(e4)
-
-        view = MasterlistView(embeds)
-        await ctx.send(embed=embeds[0], view=view)
-
-    # ==========================================
-    # 🧠 AI UTILITIES (Fixed Dictionary) & BOSS
-    # ==========================================
     @commands.hybrid_command(name="define", description="AI powered dictionary definition.")
     async def define(self, ctx, word: str): 
         if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": f"Give a precise, comprehensive dictionary definition for the word: '{word}'"}])
+        reply = self.ask_groq([{"role": "user", "content": f"Give a precise dictionary definition for the word: '{word}'"}])
         await ctx.send(embed=discord.Embed(title=f"📖 Definition: {word.title()}", description=reply, color=discord.Color.dark_blue()))
 
     @commands.hybrid_command(name="urban", description="AI powered Urban Dictionary.")
     async def urban(self, ctx, word: str): 
         if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         await ctx.defer()
-        reply = self.ask_groq([{"role": "user", "content": f"Give an internet slang 'Urban Dictionary' style definition for: '{word}'. Keep it funny but safe."}])
+        reply = self.ask_groq([{"role": "user", "content": f"Give an internet slang 'Urban Dictionary' style definition for: '{word}'. Safe for work."}])
         await ctx.send(embed=discord.Embed(title=f"🏙️ Urban Dictionary: {word.title()}", description=reply, color=discord.Color.dark_green()))
 
-    @commands.hybrid_command(name="bossfight", description="Start an interactive UI Boss Fight.")
-    async def bossfight(self, ctx):
-        if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
-        await ctx.defer()
-        # Generate Boss Name via AI
-        boss_name = self.ask_groq([{"role": "user", "content": "Generate ONLY the name of an epic dark fantasy boss monster. Nothing else."}])
-        boss_hp = random.randint(3000, 8000)
-        
-        view = BossFightView(ctx, boss_name, boss_hp)
-        embed = view.generate_embed()
-        embed.description = f"**{boss_name} has appeared!** What will you do?"
-        await ctx.send(embed=embed, view=view)
+    @commands.hybrid_command(name="forceevent", description="Force hourly event.")
+    @commands.has_permissions(administrator=True)
+    async def forceevent(self, ctx): await ctx.send(embed=discord.Embed(title="🌟 Event", description=self.ask_groq([{"role": "user", "content": "Generate a modern Discord event."}]), color=discord.Color.blurple()))
+
+    @commands.hybrid_command(name="tldr", description="AI summarizes chat.")
+    async def tldr(self, ctx): await ctx.defer(); log = "\n".join([m.content async for m in ctx.channel.history(limit=50) if m.content]); await ctx.send(f"📜 **TL;DR:** {self.ask_groq([{'role': 'user', 'content': f'Summarize: {log}'}])}")
+
+    @commands.hybrid_command(name="roast_history", description="AI roasts history.")
+    async def roast_history(self, ctx, member: discord.Member): await ctx.defer(); log = "\n".join([m.content async for m in ctx.channel.history(limit=20) if m.author == member and m.content]); await ctx.send(f"🔥 **Roast for {member.name}:**\n{self.ask_groq([{'role': 'user', 'content': f'Roast based on: {log}'}])}")
+
+    @commands.hybrid_command(name="gothic_translate", description="Translate to dark fantasy.")
+    async def gothic_translate(self, ctx, *, text: str): await ctx.defer(); await ctx.send(f"🦇 **Gothic:**\n{self.ask_groq([{'role': 'user', 'content': f'Rewrite into dark gothic royal decree: {text}'}])}")
+
+    @commands.hybrid_command(name="lore", description="AI generates server lore.")
+    async def lore(self, ctx): await ctx.defer(); await ctx.send(f"📖 **Server Lore:**\n{self.ask_groq([{'role': 'user', 'content': 'Write dark fantasy backstory for this server.'}])}")
+
+    @commands.hybrid_command(name="vibecheck", description="AI vibe check.")
+    async def vibecheck(self, ctx, member: discord.Member): await ctx.defer(); log = "\n".join([m.content async for m in ctx.channel.history(limit=20) if m.author == member and m.content]); await ctx.send(f"🔮 **Vibe Check:**\n{self.ask_groq([{'role': 'user', 'content': f'Analyze vibe humorously: {log}'}])}")
 
     # ==========================================
-    # 💰 HIGH-TIER DYNAMIC ECONOMY & SHOP
+    # 💰 HIGH-TIER DYNAMIC ECONOMY & SHOP UI
     # ==========================================
+    @commands.hybrid_command(name="shop", description="View the interactive rotating Legendary Shop.")
+    async def shop(self, ctx): 
+        items = db.get("current_shop", [])
+        if not items:
+            return await ctx.send(embed=discord.Embed(description="🛒 The merchant is currently traveling. The shop will restock soon.", color=discord.Color.dark_grey()))
+            
+        embed = discord.Embed(title="🛒 The Mystic Merchant", description="The shop restocks randomly every 60 minutes.\nClick the buttons below to purchase an artifact.", color=discord.Color.gold())
+        for item in items:
+            embed.add_field(name=f"✨ {item['name']}", value=f"**Price:** {item['price']:,} Coins\n*{item['desc']}*", inline=False)
+            
+        # Attach the dynamic UI View
+        view = DynamicShopView(items)
+        await ctx.send(embed=embed, view=view)
+
+    @commands.hybrid_command(name="inventory", description="Check your legendary items.")
+    async def inventory(self, ctx): 
+        uid = str(ctx.author.id)
+        items = db.get("inventory", {}).get(uid, [])
+        embed = discord.Embed(title=f"🎒 {ctx.author.name}'s Relics", description="\n".join([f"- {i}" for i in items]) if items else "Inventory is empty.", color=discord.Color.blue())
+        await ctx.send(embed=embed)
+
     @commands.hybrid_command(name="bal", description="Check your coin balance.")
     async def bal(self, ctx, member: discord.Member = None): 
         target = member or ctx.author
@@ -346,19 +422,21 @@ class MasterCommands(commands.Cog):
     @commands.hybrid_command(name="daily", description="Claim daily coins.")
     @commands.cooldown(1, 86400, commands.BucketType.user)
     async def daily(self, ctx): 
-        uid = str(ctx.author.id)
-        db["economy"][uid] = db["economy"].get(uid, 0) + 500000
-        save_db(db)
+        uid = str(ctx.author.id); db["economy"][uid] = db["economy"].get(uid, 0) + 500000; save_db(db)
         await ctx.send(embed=discord.Embed(description="🎁 **You claimed your daily 500,000 coins!**", color=discord.Color.gold()))
+
+    @commands.hybrid_command(name="weekly", description="Claim weekly coins.")
+    @commands.cooldown(1, 604800, commands.BucketType.user)
+    async def weekly(self, ctx): 
+        uid = str(ctx.author.id); db["economy"][uid] = db["economy"].get(uid, 0) + 5000000; save_db(db)
+        await ctx.send(embed=discord.Embed(description="💎 **You claimed massive 5,000,000 weekly coins!**", color=discord.Color.purple()))
 
     @commands.hybrid_command(name="work", description="Work for coins.")
     @commands.cooldown(1, 3600, commands.BucketType.user) 
     async def work(self, ctx): 
         earned = random.randint(50000, 150000)
-        uid = str(ctx.author.id)
-        db["economy"][uid] = db["economy"].get(uid, 0) + earned
-        save_db(db)
-        await ctx.send(embed=discord.Embed(description=f"💼 **You worked a grueling shift and earned {earned:,} coins!**", color=discord.Color.green()))
+        uid = str(ctx.author.id); db["economy"][uid] = db["economy"].get(uid, 0) + earned; save_db(db)
+        await ctx.send(embed=discord.Embed(description=f"💼 **You worked and earned {earned:,} coins!**", color=discord.Color.green()))
 
     @commands.hybrid_command(name="crime", description="Commit a crime for coins (risky).")
     @commands.cooldown(1, 3600, commands.BucketType.user)
@@ -374,72 +452,44 @@ class MasterCommands(commands.Cog):
             await ctx.send(embed=discord.Embed(description=f"🚓 **The feds caught you! You paid a fine of {lost:,} coins.**", color=discord.Color.red()))
         save_db(db)
 
-    @commands.hybrid_command(name="shop", description="View the rotating Legendary Shop.")
-    async def shop(self, ctx): 
-        items = db.get("current_shop", [])
-        if not items:
-            return await ctx.send(embed=discord.Embed(description="🛒 The merchant is currently traveling. The shop will open soon.", color=discord.Color.dark_grey()))
-            
-        embed = discord.Embed(title="🛒 The Mystic Merchant", description="The shop restocks randomly every 60 minutes.\nUse `/buy <item>` to purchase.", color=discord.Color.gold())
-        for item in items:
-            embed.add_field(name=f"✨ {item['name']}", value=f"**Price:** {item['price']:,} Coins\n*{item['desc']}*", inline=False)
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="buy", description="Buy an item from the rotating shop.")
-    async def buy(self, ctx, *, item_name: str):
-        uid = str(ctx.author.id)
-        current_shop = db.get("current_shop", [])
-        
-        # Find item in shop
-        target_item = next((i for i in current_shop if i["name"].lower() == item_name.lower()), None)
-        
-        if not target_item: 
-            return await ctx.send(embed=discord.Embed(description="❌ **That item is not currently in the shop.**", color=discord.Color.red()))
-        if db["economy"].get(uid, 0) < target_item["price"]: 
-            return await ctx.send(embed=discord.Embed(description="❌ **You are too broke for this legendary artifact.**", color=discord.Color.red()))
-            
-        db["economy"][uid] -= target_item["price"]
-        if uid not in db["inventory"]: db["inventory"][uid] = []
-        db["inventory"][uid].append(target_item["name"])
+    @commands.hybrid_command(name="rob", description="Steal from another user.")
+    @commands.cooldown(1, 7200, commands.BucketType.user)
+    async def rob(self, ctx, member: discord.Member):
+        uid, tid = str(ctx.author.id), str(member.id)
+        if db["economy"].get(tid, 0) < 100000: return await ctx.send(embed=discord.Embed(description=f"❌ **{member.name} is too poor to rob.**", color=discord.Color.red()))
+        if random.choice([True, False]): 
+            stolen = random.randint(50000, int(db["economy"][tid] * 0.25))
+            db["economy"][tid] -= stolen; db["economy"][uid] = db["economy"].get(uid, 0) + stolen
+            await ctx.send(embed=discord.Embed(description=f"🔫 **You mugged {member.name} and stole {stolen:,} coins!**", color=discord.Color.dark_green()))
+        else: 
+            fine = 100000
+            db["economy"][uid] = max(0, db["economy"].get(uid, 0) - fine)
+            await ctx.send(embed=discord.Embed(description=f"🛡️ **{member.name} fought back! You paid a {fine:,} coin hospital bill.**", color=discord.Color.dark_red()))
         save_db(db)
-        
-        await ctx.send(embed=discord.Embed(title="✅ Item Purchased!", description=f"You successfully bought **{target_item['name']}** for {target_item['price']:,} coins!\nIt has been added to your `/inventory`.", color=discord.Color.green()))
 
-    @commands.hybrid_command(name="inventory", description="Check your legendary items.")
-    async def inventory(self, ctx): 
-        uid = str(ctx.author.id)
-        items = db.get("inventory", {}).get(uid, [])
-        embed = discord.Embed(title=f"🎒 {ctx.author.name}'s Relics", description="\n".join([f"- {i}" for i in items]) if items else "Inventory is empty.", color=discord.Color.blue())
-        await ctx.send(embed=embed)
+    @commands.hybrid_command(name="heist", description="Start a bank heist event.")
+    @commands.cooldown(1, 14400, commands.BucketType.guild)
+    async def heist(self, ctx): 
+        payout = random.randint(1000000, 5000000)
+        db["economy"][str(ctx.author.id)] = db["economy"].get(str(ctx.author.id), 0) + payout; save_db(db)
+        await ctx.send(embed=discord.Embed(title="🏦 BANK HEIST SUCCESSFUL!", description=f"You blew the vault and escaped with **{payout:,} coins!**", color=discord.Color.gold()))
 
     @commands.hybrid_command(name="slots", description="Virtual slot machine for millionaires.")
     async def slots(self, ctx, bet: int):
         uid = str(ctx.author.id)
-        if db["economy"].get(uid, 0) < bet or bet <= 0: 
-            return await ctx.send(embed=discord.Embed(description="❌ **Not enough coins.**", color=discord.Color.red()))
-            
+        if db["economy"].get(uid, 0) < bet or bet <= 0: return await ctx.send(embed=discord.Embed(description="❌ **Not enough coins.**", color=discord.Color.red()))
         db["economy"][uid] -= bet
         reels = ["🍒", "🍋", "💎", "⭐", "🔔"]
         r1, r2, r3 = random.choice(reels), random.choice(reels), random.choice(reels)
-        
         msg = f"**SLOTS**\n| {r1} | {r2} | {r3} |\n\n"
-        
         if r1 == r2 == r3: 
-            winnings = bet * 10
-            db["economy"][uid] += winnings
-            embed = discord.Embed(description=msg + f"🎉 **JACKPOT!** You won **{winnings:,} coins!**", color=discord.Color.gold())
+            db["economy"][uid] += bet * 10; embed = discord.Embed(description=msg + f"🎉 **JACKPOT!** You won **{bet*10:,} coins!**", color=discord.Color.gold())
         elif r1 == r2 or r2 == r3 or r1 == r3: 
-            winnings = int(bet * 1.5)
-            db["economy"][uid] += winnings
-            embed = discord.Embed(description=msg + f"✨ **Small Win!** You got **{winnings:,} coins!**", color=discord.Color.green())
-        else: 
-            embed = discord.Embed(description=msg + "💥 **You lost.**", color=discord.Color.red())
-            
-        save_db(db)
-        await ctx.send(embed=embed)
-
+            db["economy"][uid] += int(bet * 1.5); embed = discord.Embed(description=msg + f"✨ **Small Win!** You got **{int(bet*1.5):,} coins!**", color=discord.Color.green())
+        else: embed = discord.Embed(description=msg + "💥 **You lost.**", color=discord.Color.red())
+        save_db(db); await ctx.send(embed=embed)
     # ==========================================
-    # 🛡️ EMBEDDED MODERATION
+    # 🛡️ EMBEDDED MODERATION & UTILITY
     # ==========================================
     @commands.hybrid_command(name="tempban", description="Bans a user temporarily.")
     @commands.has_permissions(ban_members=True)
@@ -477,6 +527,22 @@ class MasterCommands(commands.Cog):
         await ctx.channel.purge(limit=amount + 1)
         await ctx.send(embed=discord.Embed(description=f"🧹 **Swept {amount} messages.**", color=discord.Color.green()), delete_after=4)
 
+    @commands.hybrid_command(name="snipe", description="Recovers the last deleted message.")
+    async def snipe(self, ctx):
+        data = snipes.get(ctx.channel.id)
+        if not data: return await ctx.send(embed=discord.Embed(description="Nothing to snipe!", color=discord.Color.red()))
+        embed = discord.Embed(description=data["content"], color=discord.Color.red())
+        embed.set_author(name=data["author"], icon_url=data["avatar"])
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="editsnipe", description="Shows original text of edited message.")
+    async def editsnipe(self, ctx):
+        data = edit_snipes.get(ctx.channel.id)
+        if not data: return await ctx.send(embed=discord.Embed(description="No edited messages!", color=discord.Color.red()))
+        embed = discord.Embed(title="Edited Message", color=discord.Color.orange()).set_author(name=data["author"])
+        embed.add_field(name="Before", value=data["before"], inline=False).add_field(name="After", value=data["after"], inline=False)
+        await ctx.send(embed=embed)
+
     # ==========================================
     # 🤡 FUN, TROLLING & ANIME (PREFIX COMMANDS)
     # ==========================================
@@ -487,7 +553,7 @@ class MasterCommands(commands.Cog):
     @commands.command(name="rickroll")
     async def rickroll(self, ctx, member: discord.Member):
         try: 
-            await member.send("🎁 **You have been gifted Discord Nitro!** Claim it here: https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+            await member.send("🎁 **You have been gifted Discord Nitro!** Claim it here: [https://www.youtube.com/watch?v=dQw4w9WgXcQ](https://www.youtube.com/watch?v=dQw4w9WgXcQ)")
             await ctx.send(embed=discord.Embed(description=f"🤫 **Sent a disguised package to {member.name}.**", color=discord.Color.green()))
         except: 
             await ctx.send(embed=discord.Embed(description="❌ **Their DMs are closed.**", color=discord.Color.red()))
