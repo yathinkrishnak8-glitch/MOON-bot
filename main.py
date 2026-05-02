@@ -115,7 +115,7 @@ async def on_ready():
 
 @tasks.loop(minutes=60)
 async def ai_event_loop():
-    """Triggers a random AI event every 60 minutes in the designated channel."""
+    """Triggers an engaging AI event every 60 minutes."""
     if not client: return
     channel_id = db["config"].get("event_channel")
     if not channel_id: return
@@ -124,14 +124,18 @@ async def ai_event_loop():
     if not channel: return
 
     prompt = """
-    You are the Dungeon Master of a Discord server. Generate a random, engaging server event. 
-    It can be a lore drop about a mysterious traveler, a boss monster appearing, or a blessing from the gods.
-    Make it epic, funny, and use internet slang. Keep it under 3 paragraphs. 
-    Do NOT output JSON. Just output the raw message to send to the chat.
+    You are the AI Engagement Manager for this Discord server. Your job is to keep the chat active.
+    Generate a random, highly engaging server event. 
+    Options (pick one randomly):
+    1. A thought-provoking 'Question of the Hour'.
+    2. A random, funny hot take to spark debate.
+    3. A mini text-based scenario for users to react to.
+    Keep it concise, modern, and use internet slang. Do NOT output JSON. Just output the raw text.
     """
     try:
         reply = ask_groq([{"role": "user", "content": prompt}])
-        embed = discord.Embed(title="🚨 RANDOM SERVER EVENT 🚨", description=reply, color=discord.Color.dark_purple())
+        embed = discord.Embed(title="🌟 Server Event", description=reply, color=discord.Color.blurple())
+        embed.set_footer(text="Interact in the chat below!")
         await channel.send(embed=embed)
     except Exception as e:
         print(f"Event Loop Error: {e}")
@@ -145,22 +149,22 @@ async def check_command_channel(ctx):
     if ctx.author.guild_permissions.administrator: return True # Admins bypass this
     
     cmd_channel_id = db["config"].get("cmd_channel")
-    if not cmd_channel_id: return True # If no channel is set, allow anywhere
+    if not cmd_channel_id: return True 
     
     if ctx.channel.id != cmd_channel_id:
         cmd_chan = ctx.guild.get_channel(cmd_channel_id)
         if cmd_chan:
-            await ctx.send(f"❌ Commands belong in {cmd_chan.mention}, bozo.", delete_after=5)
+            await ctx.send(f"❌ Commands belong in {cmd_chan.mention}, please.", delete_after=5)
         return False
     return True
 
 # ==========================================
-# 5. SERVER DEPLOYER & GOD-MODE
+# 5. MODERN SERVER DEPLOYER
 # ==========================================
-@bot.hybrid_command(name="deployserver", description="WARNING: Deletes ALL channels/roles and builds a top-tier server from scratch.")
+@bot.hybrid_command(name="deployserver", description="WARNING: Deletes ALL channels/roles and builds a clean, modern layout.")
 @commands.has_permissions(administrator=True)
 async def deployserver(ctx):
-    await ctx.send("⚠️ **INITIATING PROJECT ZERO.** Wiping current server and building the Ultimate Kingdom...\n*This will take a few minutes to bypass Discord limits.*")
+    await ctx.send("⚠️ **INITIATING CLEAN SLATE PROTOCOL.** Wiping current server and building modern layout...\n*Please wait, bypassing rate limits...*")
     guild = ctx.guild
 
     # 1. DELETE EXISTING CHANNELS (SLOWLY)
@@ -178,36 +182,37 @@ async def deployserver(ctx):
                 await asyncio.sleep(0.5)
             except: pass
 
-    # 3. BUILD NEW ROLES
+    # 3. BUILD CLEAN ROLES
     roles_to_make = [
-        {"name": "👑 Emperor", "color": discord.Color.gold(), "admin": True},
-        {"name": "⚔️ High Council", "color": discord.Color.dark_red(), "admin": False},
-        {"name": "🛡️ Knight", "color": discord.Color.blue(), "admin": False},
-        {"name": "📜 Citizen", "color": discord.Color.light_grey(), "admin": False},
+        {"name": "Admin", "color": discord.Color.red(), "admin": True},
+        {"name": "Moderator", "color": discord.Color.orange(), "admin": False},
+        {"name": "Member", "color": discord.Color.blue(), "admin": False},
         {"name": "Jailed", "color": discord.Color.dark_grey(), "admin": False}
     ]
     created_roles = {}
     for r in roles_to_make:
         perms = discord.Permissions(administrator=r["admin"])
+        if r["name"] == "Moderator":
+            perms.update(kick_members=True, ban_members=True, manage_messages=True, moderate_members=True)
         new_role = await guild.create_role(name=r["name"], color=r["color"], permissions=perms, hoist=True)
         created_roles[r["name"]] = new_role
         await asyncio.sleep(1)
         
-    await ctx.author.add_roles(created_roles["👑 Emperor"])
+    await ctx.author.add_roles(created_roles["Admin"])
 
-    # 4. BUILD NEW CATEGORIES & CHANNELS
-    cat_hub = await guild.create_category("🏰 THE KINGDOM HUB")
-    await guild.create_text_channel("rules", category=cat_hub)
-    announcements = await guild.create_text_channel("announcements", category=cat_hub)
+    # 4. BUILD CLEAN CATEGORIES & CHANNELS
+    cat_info = await guild.create_category("📌 INFORMATION")
+    await guild.create_text_channel("rules", category=cat_info)
+    announcements = await guild.create_text_channel("announcements", category=cat_info)
     
-    cat_chat = await guild.create_category("🗣️ LORE & CHAT")
+    cat_chat = await guild.create_category("💬 TEXT CHANNELS")
     gen_chat = await guild.create_text_channel("general", category=cat_chat)
     bot_cmds = await guild.create_text_channel("bot-commands", category=cat_chat)
     ai_chat = await guild.create_text_channel("talk-to-ai", category=cat_chat)
     
-    cat_vc = await guild.create_category("🔊 TAVERN (VOICE)")
-    await guild.create_voice_channel("Lounge", category=cat_vc)
-    await guild.create_voice_channel("Gaming", category=cat_vc)
+    cat_vc = await guild.create_category("🔊 VOICE CHANNELS")
+    await guild.create_voice_channel("General VC", category=cat_vc)
+    await guild.create_voice_channel("Gaming VC", category=cat_vc)
 
     # 5. LOCK JAIL
     jail_role = created_roles["Jailed"]
@@ -220,9 +225,12 @@ async def deployserver(ctx):
     db["config"]["event_channel"] = gen_chat.id
     save_db(db)
 
-    embed = discord.Embed(title="✅ DEPLOYMENT COMPLETE", description="Welcome to your new Kingdom. \n- AI Events set to General.\n- Normal Commands locked to #bot-commands.\n- AI auto-chat locked to #talk-to-ai.", color=discord.Color.green())
+    embed = discord.Embed(title="✅ SERVER DEPLOYMENT COMPLETE", description="Modern Server Layout installed.\n- Auto-Events bound to General.\n- Normal Commands bound to #bot-commands.\n- AI Chat bound to #talk-to-ai.", color=discord.Color.green())
     await gen_chat.send(f"{ctx.author.mention}", embed=embed)
 
+# ==========================================
+# 6. GOD-MODE AI COMMANDER (WITH FEEDBACK LOOP)
+# ==========================================
 @bot.hybrid_command(name='aicommand', description="The Master AI brain. It can do ANYTHING you ask it to.")
 @app_commands.describe(instruction="What do you want the bot to do?")
 @commands.has_permissions(administrator=True)
@@ -237,7 +245,7 @@ async def aicommand(ctx, *, instruction: str):
     Turn this into a JSON array of actions. 
     1. Reply: {{"action": "reply", "message": "text"}}
     2. Ban: {{"action": "ban", "target": "username", "reason": "text"}}
-    3. Execute Python: {{"action": "execute", "code": "await ctx.send('Done!')"}}
+    3. Execute Python: {{"action": "execute", "code": "await ctx.send('Task complete!')"}}
     
     STRICT EXECUTE RULES:
     - You must write valid discord.py asynchronous code.
@@ -245,40 +253,60 @@ async def aicommand(ctx, *, instruction: str):
     - Use \\n for new lines.
     - Add 'await asyncio.sleep(2)' between EVERY channel creation/deletion.
     
-    OUTPUT STRICTLY A VALID JSON ARRAY starting with [ and ending with ].
+    OUTPUT STRICTLY A VALID JSON ARRAY starting with [ and ending with ]. Do not wrap in backticks.
     """
     try:
         raw = ask_groq([{"role": "user", "content": prompt}])
         start_idx, end_idx = raw.find('['), raw.rfind(']')
-        if start_idx != -1 and end_idx != -1: clean_json = raw[start_idx:end_idx+1]
-        else: clean_json = raw.replace('```json', '').replace('```', '').replace('```python', '').strip()
         
+        if start_idx != -1 and end_idx != -1: 
+            clean_json = raw[start_idx:end_idx+1]
+        else: 
+            clean_json = raw.replace('```json', '').replace('```', '').replace('```python', '').strip()
+            if clean_json.startswith('{') and clean_json.endswith('}'): clean_json = f"[{clean_json}]"
+            
         actions = json.loads(clean_json)
         
         for act in actions:
             atype = act.get("action")
-            if atype == "reply": await ctx.send(f"🤖 **habbibi mod (::** {act.get('message')}")
-            elif atype == "ban" and act.get("target"):
-                member = find_member(ctx, act.get("target"))
-                if member:
-                    await member.ban(reason=act.get("reason", "AI Ban"))
-                    await ctx.send(f"🔨 AI Banished {member.mention}.")
-            elif atype == "execute":
-                code = act.get("code", "")
-                await ctx.send("⚡ **AI is executing dynamic Python code...**")
-                try:
-                    wrapped_code = f"async def __ai_exec():\n"
-                    for line in code.split("\n"): wrapped_code += f"    {line}\n"
-                    exec_env = {'discord': discord, 'bot': bot, 'ctx': ctx, 'asyncio': asyncio, 'db': db}
-                    exec(wrapped_code, exec_env)
-                    await exec_env['__ai_exec']()
-                except Exception as code_error:
-                    await ctx.send(f"⚠️ AI Code Execution Failed:\n```py\n{code_error}\n```")
+            
+            try:
+                if atype == "reply": 
+                    await ctx.send(f"🤖 **habbibi mod (::** {act.get('message')}")
+                    
+                elif atype == "ban" and act.get("target"):
+                    member = find_member(ctx, act.get("target"))
+                    if member:
+                        await member.ban(reason=act.get("reason", "AI Ban"))
+                        await ctx.send(f"✅ **Success:** AI Banished {member.mention}.")
+                    else:
+                        await ctx.send(f"⚠️ **Failed:** Could not find user `{act.get('target')}` to ban.")
+                        
+                elif atype == "execute":
+                    code = act.get("code", "")
+                    status_msg = await ctx.send("⚡ **AI is executing dynamic Python code. Please wait...**")
+                    try:
+                        wrapped_code = f"async def __ai_exec():\n"
+                        for line in code.split("\n"): wrapped_code += f"    {line}\n"
+                        exec_env = {'discord': discord, 'bot': bot, 'ctx': ctx, 'asyncio': asyncio, 'db': db}
+                        exec(wrapped_code, exec_env)
+                        await exec_env['__ai_exec']()
+                        await status_msg.edit(content="✅ **AI Code Execution Successful!**")
+                    except Exception as code_error:
+                        await status_msg.edit(content=f"⚠️ **AI Code Execution Failed:**\n```py\n{code_error}\n```")
+                else:
+                    await ctx.send(f"⚠️ **Unknown Action Type:** `{atype}` generated by AI.")
+                    
+            except Exception as action_err:
+                await ctx.send(f"❌ **Action '{atype}' crashed:** `{action_err}`")
+                
+    except json.JSONDecodeError as json_err:
+        await ctx.send(f"❌ **AI JSON Formatting Error:** The AI failed to write readable code.\n`{json_err}`")
     except Exception as e:
-        await ctx.send(f"❌ AI Error: {e}")
+        await ctx.send(f"❌ **AI System Error:** `{e}`")
 
 # ==========================================
-# 6. MESSAGE LISTENER (AI, XP, AUTOMOD)
+# 7. MESSAGE LISTENER (AI, XP, AUTOMOD)
 # ==========================================
 @bot.listen('on_message')
 async def on_message_listener(message):
@@ -309,7 +337,7 @@ async def on_message_listener(message):
         async with message.channel.typing():
             try:
                 reply = ask_groq([
-                    {"role": "system", "content": "You are habbibi mod (:, a sarcastic Discord bot."},
+                    {"role": "system", "content": "You are habbibi mod (:, a sarcastic Discord bot. Keep responses clean, short, and use slang."},
                     {"role": "user", "content": message.content}
                 ])
                 await message.channel.send(reply[:2000])
@@ -317,7 +345,7 @@ async def on_message_listener(message):
                 await message.channel.send(f"❌ AI glitched: {e}")
 
 # ==========================================
-# 7. ECONOMY & RPG COMMANDS
+# 8. ECONOMY & RPG COMMANDS
 # ==========================================
 @bot.hybrid_command(name="bal", description="Check your coin balance.")
 async def bal(ctx, member: discord.Member = None):
@@ -325,12 +353,12 @@ async def bal(ctx, member: discord.Member = None):
     await ctx.send(f"💰 {member.name} has **{get_eco(str(member.id))}** coins.")
 
 @bot.hybrid_command(name="work", description="Work to earn coins.")
-@commands.cooldown(1, 3600, commands.BucketType.user) # 1 hour cooldown
+@commands.cooldown(1, 3600, commands.BucketType.user) 
 async def work(ctx):
     earned = random.randint(100, 300)
     add_eco(str(ctx.author.id), earned)
     save_db(db)
-    await ctx.send(f"💼 You worked a grueling shift and earned **{earned} coins**!")
+    await ctx.send(f"💼 You worked a shift and earned **{earned} coins**!")
 
 @bot.hybrid_command(name="crime", description="Commit a crime for coins (risky).")
 @commands.cooldown(1, 3600, commands.BucketType.user)
@@ -339,32 +367,32 @@ async def crime(ctx):
     if random.choice([True, False]):
         earned = random.randint(300, 700)
         add_eco(uid, earned)
-        await ctx.send(f"🥷 You successfully robbed the royal vault for **{earned} coins**!")
+        await ctx.send(f"🥷 You successfully hacked a bank for **{earned} coins**!")
     else:
         lost = random.randint(100, 250)
         db["economy"][uid] = max(0, get_eco(uid) - lost)
-        await ctx.send(f"🚓 The guards caught you! You paid a fine of **{lost} coins**.")
+        await ctx.send(f"🚓 The feds caught you! You paid a fine of **{lost} coins**.")
     save_db(db)
 
 @bot.hybrid_command(name="rob", description="Attempt to steal from another user.")
-@commands.cooldown(1, 7200, commands.BucketType.user) # 2 hour cooldown
+@commands.cooldown(1, 7200, commands.BucketType.user) 
 async def rob(ctx, member: discord.Member):
     uid, target_id = str(ctx.author.id), str(member.id)
     if get_eco(target_id) < 100:
         return await ctx.send(f"❌ {member.name} is too poor to rob.")
     
     if random.choice([True, False]):
-        stolen = random.randint(50, int(get_eco(target_id) * 0.2)) # Steal up to 20%
+        stolen = random.randint(50, int(get_eco(target_id) * 0.2)) 
         db["economy"][target_id] -= stolen
         add_eco(uid, stolen)
-        await ctx.send(f"🔫 You violently mugged {member.name} and stole **{stolen} coins**!")
+        await ctx.send(f"🔫 You mugged {member.name} and stole **{stolen} coins**!")
     else:
         fine = 200
         db["economy"][uid] = max(0, get_eco(uid) - fine)
         await ctx.send(f"🛡️ {member.name} fought back! You dropped **{fine} coins** running away.")
     save_db(db)
 
-@bot.hybrid_command(name="level", description="Check your current RPG Level.")
+@bot.hybrid_command(name="level", description="Check your current chat Level.")
 async def level(ctx, member: discord.Member = None):
     member = member or ctx.author
     uid = str(member.id)
@@ -372,7 +400,7 @@ async def level(ctx, member: discord.Member = None):
     await ctx.send(f"⭐ **{member.name}** is Level **{lvl_data['level']}** ({lvl_data['xp']} XP).")
 
 # ==========================================
-# 8. STANDARD MODERATION 
+# 9. STANDARD MODERATION 
 # ==========================================
 @bot.hybrid_command(name="purge", description="Deletes multiple messages.")
 @commands.has_permissions(manage_messages=True)
@@ -390,7 +418,7 @@ async def nuke(ctx):
     await new_channel.send("☢️ **TACTICAL NUKE INCOMING!** 💥")
 
 # ==========================================
-# 9. RENDER BOOT UP
+# 10. RENDER BOOT UP
 # ==========================================
 if __name__ == "__main__":
     keep_alive()
