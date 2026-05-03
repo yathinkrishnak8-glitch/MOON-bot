@@ -160,7 +160,6 @@ class AIBossFightView(discord.ui.View):
     async def run_button(self, interaction, button):
         for child in self.children: child.disabled = True
         await interaction.response.edit_message(embed=discord.Embed(title="🏃 YOU FLED", description="You ran away.", color=discord.Color.light_grey()), view=self)
-
 # ==========================================
 # CORE COG, ERROR HANDLER & LISTENERS
 # ==========================================
@@ -249,7 +248,7 @@ class MasterCommands(commands.Cog):
     @ai_event_loop.before_loop
     async def before_event_loop(self): await self.bot.wait_until_ready()
 
-@commands.Cog.listener()
+    @commands.Cog.listener()
     async def on_member_join(self, member):
         if db["config"].get("antiraid", False):
             try: await member.kick(reason="Anti-Raid active.")
@@ -270,7 +269,7 @@ class MasterCommands(commands.Cog):
         if message.author.bot: return
         uid = str(message.author.id)
 
-        # 1. PURE TEXT DM AI CHAT (No Embeds - Full Freedom)
+        # 1. PURE TEXT DM AI CHAT
         if not message.guild:
             if not self.client: return
             async with message.channel.typing():
@@ -313,7 +312,7 @@ class MasterCommands(commands.Cog):
             cmd = message.content[1:].split()[0].lower()
             if cmd in db["custom_commands"]: return await message.channel.send(embed=discord.Embed(description=db["custom_commands"][cmd], color=discord.Color.blue()))
 
-        # 6. PURE TEXT SERVER AI CHAT (No Embeds)
+        # 6. PURE TEXT SERVER AI CHAT
         ai_chan = db["config"].get("ai_channel")
         if message.channel.id == ai_chan and not message.content.startswith(('!', '/')) and self.client:
             async with message.channel.typing():
@@ -324,8 +323,7 @@ class MasterCommands(commands.Cog):
                     ])
                     await message.channel.send(reply[:2000])
                 except: pass
-
-    # ==========================================
+# ==========================================
     # CONFIG & MASTERLIST
     # ==========================================
     @commands.hybrid_command(name="setaichannel", description="Sets AI auto-reply channel.")
@@ -390,7 +388,7 @@ class MasterCommands(commands.Cog):
         e4 = discord.Embed(title="🤡 Masterlist: Prefix (Page 4/4)", description="**Use `!` for these (e.g., `!hack`)**", color=discord.Color.purple()).add_field(name="Trolls", value="`!fakeban`, `!rickroll`, `!roast`", inline=False).add_field(name="Anime", value="`!pat`, `!punch`, `!kiss`, `!domain_expansion`", inline=False)
         await ctx.send(embed=e1, view=PaginationView(ctx, [e1, e2, e3, e4]))
 
-# ==========================================
+    # ==========================================
     # GOD-MODE & AI TOOLS
     # ==========================================
     @commands.hybrid_command(name='aicommand', description="Master AI brain. Execute python dynamically.")
@@ -488,27 +486,26 @@ class MasterCommands(commands.Cog):
         if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         reply = await self.ask_groq([{"role": "system", "content": "Argue against user."}, {"role": "user", "content": topic}])
         await ctx.send(embed=discord.Embed(title=f"⚖️ Debating: {topic}", description=reply, color=discord.Color.dark_grey()))
-
-    # ==========================================
+# ==========================================
     # ADVANCED MODERATION
     # ==========================================
-    @commands.hybrid_command(name="tempban")
+    @commands.hybrid_command(name="tempban", description="Bans a user temporarily.")
     @commands.has_permissions(ban_members=True)
     async def tempban(self, ctx, m: discord.Member, days: int, *, r: str="Ban"): 
         await ctx.defer(); await m.ban(reason=r); await ctx.send(embed=discord.Embed(title="🔨 Banned", description=f"**{m.name}** for {days}d.\nReason: {r}", color=discord.Color.red()))
         await asyncio.sleep(days * 86400); await ctx.guild.unban(m, reason="Expired")
 
-    @commands.hybrid_command(name="tempmute")
+    @commands.hybrid_command(name="tempmute", description="Mutes a user.")
     @commands.has_permissions(moderate_members=True)
     async def tempmute(self, ctx, m: discord.Member, mins: int, *, r: str="Mute"): 
         await ctx.defer(); await m.timeout(timedelta(minutes=mins), reason=r); await ctx.send(embed=discord.Embed(title="🔇 Muted", description=f"**{m.name}** for {mins}m.", color=discord.Color.orange()))
 
-    @commands.hybrid_command(name="slowmode")
+    @commands.hybrid_command(name="slowmode", description="Sets slowmode.")
     @commands.has_permissions(manage_channels=True)
     async def slowmode(self, ctx, s: int): 
         await ctx.defer(); await ctx.channel.edit(slowmode_delay=s); await ctx.send(embed=discord.Embed(description=f"⏱️ **Slowmode {s}s.**", color=discord.Color.blue()))
 
-    @commands.hybrid_command(name="lockdown")
+    @commands.hybrid_command(name="lockdown", description="Instantly locks all channels.")
     @commands.has_permissions(administrator=True)
     async def lockdown(self, ctx):
         await ctx.defer(); await ctx.send(embed=discord.Embed(description="🚨 **LOCKDOWN INITIATED...**", color=discord.Color.red()))
@@ -516,7 +513,7 @@ class MasterCommands(commands.Cog):
             try: await c.set_permissions(ctx.guild.default_role, send_messages=False)
             except: pass
 
-    @commands.hybrid_command(name="unlockdown")
+    @commands.hybrid_command(name="unlockdown", description="Reverses the lockdown.")
     @commands.has_permissions(administrator=True)
     async def unlockdown(self, ctx):
         await ctx.defer(); await ctx.send(embed=discord.Embed(description="🔓 **LOCKDOWN LIFTED...**", color=discord.Color.green()))
@@ -524,19 +521,19 @@ class MasterCommands(commands.Cog):
             try: await c.set_permissions(ctx.guild.default_role, send_messages=True)
             except: pass
 
-    @commands.hybrid_command(name="snipe")
+    @commands.hybrid_command(name="snipe", description="Recovers the last deleted message.")
     async def snipe(self, ctx):
         await ctx.defer(); d = snipes.get(ctx.channel.id)
         if not d: return await ctx.send(embed=discord.Embed(description="Nothing to snipe!", color=discord.Color.red()))
         await ctx.send(embed=discord.Embed(description=d["content"], color=discord.Color.red()).set_author(name=d["author"], icon_url=d["avatar"]))
 
-    @commands.hybrid_command(name="editsnipe")
+    @commands.hybrid_command(name="editsnipe", description="Shows the original text of an edited message.")
     async def editsnipe(self, ctx):
         await ctx.defer(); d = edit_snipes.get(ctx.channel.id)
         if not d: return await ctx.send(embed=discord.Embed(description="No edited messages!", color=discord.Color.red()))
         await ctx.send(embed=discord.Embed(title="Edited", color=discord.Color.orange()).set_author(name=d["author"]).add_field(name="Before", value=d["before"], inline=False).add_field(name="After", value=d["after"], inline=False))
 
-    @commands.hybrid_command(name="purge")
+    @commands.hybrid_command(name="purge", description="Deletes multiple messages.")
     @commands.has_permissions(manage_messages=True)
     async def purge(self, ctx, amount: int): 
         await ctx.defer(); view = ConfirmView(ctx); msg = await ctx.send(embed=discord.Embed(description=f"⚠️ Delete {amount} messages?", color=discord.Color.orange()), view=view)
@@ -544,7 +541,7 @@ class MasterCommands(commands.Cog):
         if not view.value: return await msg.edit(embed=discord.Embed(description="🛑 Cancelled.", color=discord.Color.grey()), view=None)
         await ctx.channel.purge(limit=amount + 1); await ctx.send(embed=discord.Embed(description=f"🧹 **Swept {amount}.**", color=discord.Color.green()), delete_after=4)
 
-    @commands.hybrid_command(name="nuke")
+    @commands.hybrid_command(name="nuke", description="Clones and deletes the channel.")
     @commands.has_permissions(administrator=True)
     async def nuke(self, ctx): 
         await ctx.defer(); view = ConfirmView(ctx); msg = await ctx.send(embed=discord.Embed(title="☢️ NUKE", description="Are you sure?", color=discord.Color.red()), view=view)
@@ -555,21 +552,21 @@ class MasterCommands(commands.Cog):
         embed.set_image(url="[https://i.imgur.com/K3XyVZV.gif](https://i.imgur.com/K3XyVZV.gif)")
         await nc.send(embed=embed)
 
-    @commands.hybrid_command(name="kick")
+    @commands.hybrid_command(name="kick", description="Kicks a user.")
     @commands.has_permissions(kick_members=True)
     async def kick(self, ctx, m: discord.Member, *, r: str="Lacking"): await ctx.defer(); await m.kick(reason=r); await ctx.send(embed=discord.Embed(description=f"👢 **{m.name} kicked.**", color=discord.Color.red()))
 
-    @commands.hybrid_command(name="ban")
+    @commands.hybrid_command(name="ban", description="Bans a user.")
     @commands.has_permissions(ban_members=True)
     async def ban(self, ctx, m: discord.Member, *, r: str="Banned"): await ctx.defer(); await m.ban(reason=r); await ctx.send(embed=discord.Embed(description=f"🔨 **{m.name} banned.**", color=discord.Color.dark_red()))
 
-    @commands.hybrid_command(name="warn")
+    @commands.hybrid_command(name="warn", description="Warns a user.")
     @commands.has_permissions(kick_members=True)
     async def warn(self, ctx, m: discord.Member, *, r: str="Violation"): 
         await ctx.defer(); db.setdefault("warns", {}).setdefault(str(m.id), []).append(r); save_db(db)
         await ctx.send(embed=discord.Embed(description=f"⚠️ **{m.mention} warned.**", color=discord.Color.yellow()))
 
-    @commands.hybrid_command(name="warnings")
+    @commands.hybrid_command(name="warnings", description="Shows a user's warnings.")
     async def warnings(self, ctx, m: discord.Member): 
         await ctx.defer(); w = db["warns"].get(str(m.id), [])
         if not w: return await ctx.send(embed=discord.Embed(description=f"✅ **{m.name} is clean.**", color=discord.Color.green()))
@@ -577,13 +574,13 @@ class MasterCommands(commands.Cog):
         for i, text in enumerate(w): embed.add_field(name=f"Warning {i+1}", value=text, inline=False)
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="clearwarns")
+    @commands.hybrid_command(name="clearwarns", description="Clears all warnings for a user.")
     @commands.has_permissions(administrator=True)
     async def clearwarns(self, ctx, m: discord.Member): 
         await ctx.defer(); db["warns"].pop(str(m.id), None); save_db(db)
         await ctx.send(embed=discord.Embed(description=f"🗑️ **Cleared all warnings for {m.name}.**", color=discord.Color.green()))
 
-    @commands.hybrid_command(name="jail")
+    @commands.hybrid_command(name="jail", description="Strips roles and locks user in jail.")
     @commands.has_permissions(administrator=True)
     async def jail(self, ctx, m: discord.Member):
         await ctx.defer(); db.setdefault("jailed", {})[str(m.id)] = [r.id for r in m.roles if r.id != ctx.guild.default_role.id]; save_db(db)
@@ -594,7 +591,7 @@ class MasterCommands(commands.Cog):
         if jr: await m.add_roles(jr); await ctx.send(embed=discord.Embed(description=f"⛓️ **{m.mention} locked up.**", color=discord.Color.dark_grey()))
         else: await ctx.send(embed=discord.Embed(description="⚠️ 'Jailed' role missing.", color=discord.Color.red()))
 
-    @commands.hybrid_command(name="unjail")
+    @commands.hybrid_command(name="unjail", description="Releases user from jail.")
     @commands.has_permissions(administrator=True)
     async def unjail(self, ctx, m: discord.Member):
         await ctx.defer(); jr = discord.utils.get(ctx.guild.roles, name="Jailed")
@@ -606,7 +603,7 @@ class MasterCommands(commands.Cog):
                 except: pass
         save_db(db); await ctx.send(embed=discord.Embed(description=f"🔓 **{m.mention} made bail.**", color=discord.Color.green()))
 
-# ==========================================
+    # ==========================================
     # RPG, ECONOMY & ANIMATED GIF EVENTS
     # ==========================================
     @commands.hybrid_command(name="shop", description="View the interactive rotating Legendary Shop.")
@@ -719,8 +716,7 @@ class MasterCommands(commands.Cog):
             embed.set_image(url="[https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif](https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif)")
             
         save_db(db); embed.set_footer(text=f"New Balance: {db['economy'][uid]:,} coins"); await msg.edit(embed=embed)
-
-    @commands.hybrid_command(name="blackjack", description="Play 21 against the bot.")
+@commands.hybrid_command(name="blackjack", description="Play 21 against the bot.")
     async def blackjack(self, ctx, bet: int):
         await ctx.defer(); u = str(ctx.author.id)
         if db.setdefault("economy", {}).get(u, 0) < bet or bet <= 0: return await ctx.send(embed=discord.Embed(description="❌ Poor.", color=discord.Color.red()))
@@ -762,7 +758,7 @@ class MasterCommands(commands.Cog):
         x = random.randint(300, 800); db["levels"][u]["xp"] += x; save_db(db)
         await ctx.send(embed=discord.Embed(description=f"🗡️ **Dungeon run complete!** Earned **{x} XP**!", color=discord.Color.orange()))
 
-# ==========================================
+    # ==========================================
     # LEVELING & UTILITY
     # ==========================================
     @commands.hybrid_command(name="rank")
@@ -982,4 +978,3 @@ class MasterCommands(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(MasterCommands(bot))
-
