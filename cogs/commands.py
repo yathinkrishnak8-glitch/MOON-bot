@@ -269,7 +269,7 @@ class MasterCommands(commands.Cog):
         if message.author.bot: return
         uid = str(message.author.id)
 
-        # 1. PURE TEXT DM AI CHAT
+        # 1. PURE TEXT DM AI CHAT (No Embeds)
         if not message.guild:
             if not self.client: return
             async with message.channel.typing():
@@ -312,7 +312,7 @@ class MasterCommands(commands.Cog):
             cmd = message.content[1:].split()[0].lower()
             if cmd in db["custom_commands"]: return await message.channel.send(embed=discord.Embed(description=db["custom_commands"][cmd], color=discord.Color.blue()))
 
-        # 6. PURE TEXT SERVER AI CHAT
+        # 6. PURE TEXT SERVER AI CHAT (No Embeds)
         ai_chan = db["config"].get("ai_channel")
         if message.channel.id == ai_chan and not message.content.startswith(('!', '/')) and self.client:
             async with message.channel.typing():
@@ -486,7 +486,8 @@ class MasterCommands(commands.Cog):
         if not self.client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         reply = await self.ask_groq([{"role": "system", "content": "Argue against user."}, {"role": "user", "content": topic}])
         await ctx.send(embed=discord.Embed(title=f"⚖️ Debating: {topic}", description=reply, color=discord.Color.dark_grey()))
-# ==========================================
+
+    # ==========================================
     # ADVANCED MODERATION
     # ==========================================
     @commands.hybrid_command(name="tempban", description="Bans a user temporarily.")
@@ -602,8 +603,7 @@ class MasterCommands(commands.Cog):
                 try: await m.add_roles(role)
                 except: pass
         save_db(db); await ctx.send(embed=discord.Embed(description=f"🔓 **{m.mention} made bail.**", color=discord.Color.green()))
-
-    # ==========================================
+# ==========================================
     # RPG, ECONOMY & ANIMATED GIF EVENTS
     # ==========================================
     @commands.hybrid_command(name="shop", description="View the interactive rotating Legendary Shop.")
@@ -640,7 +640,7 @@ class MasterCommands(commands.Cog):
         await ctx.defer()
         e = random.randint(50000, 150000); db.setdefault("economy", {})[str(ctx.author.id)] = db["economy"].get(str(ctx.author.id), 0) + e; save_db(db)
         embed = discord.Embed(description=f"💼 **Earned {e:,} coins!**", color=discord.Color.green())
-        embed.set_image(url="[https://media.giphy.com/media/lptjRBxFKCJmFoibP3/giphy.gif](https://media.giphy.com/media/lptjRBxFKCJmFoibP3/giphy.gif)")
+        embed.set_image(url="[https://i.imgur.com/8m1fA83.gif](https://i.imgur.com/8m1fA83.gif)")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="crime", description="Commit a crime for coins (risky).")
@@ -651,11 +651,11 @@ class MasterCommands(commands.Cog):
         if random.choice([True, False]): 
             e = random.randint(100000, 400000); db.setdefault("economy", {})[u] = db["economy"].get(u, 0) + e
             embed = discord.Embed(description=f"🥷 **Hacked {e:,} coins!**", color=discord.Color.purple())
-            embed.set_image(url="[https://media.giphy.com/media/YQitE4YNQNahy/giphy.gif](https://media.giphy.com/media/YQitE4YNQNahy/giphy.gif)")
+            embed.set_image(url="[https://i.imgur.com/B1n3kO1.gif](https://i.imgur.com/B1n3kO1.gif)")
         else: 
             l = random.randint(50000, 150000); db.setdefault("economy", {})[u] = max(0, db["economy"].get(u, 0) - l)
             embed = discord.Embed(description=f"🚓 **Feds caught you! Batman arrived. Fined {l:,} coins.**", color=discord.Color.red())
-            embed.set_image(url="[https://media.giphy.com/media/a5viI92PAF89q/giphy.gif](https://media.giphy.com/media/a5viI92PAF89q/giphy.gif)")
+            embed.set_image(url="[https://i.imgur.com/N7cKjVp.gif](https://i.imgur.com/N7cKjVp.gif)")
         save_db(db); await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="rob")
@@ -667,11 +667,11 @@ class MasterCommands(commands.Cog):
         if random.choice([True, False]): 
             s = random.randint(50000, int(db["economy"][t] * 0.25)); db["economy"][t] -= s; db["economy"][u] = db["economy"].get(u, 0) + s
             embed = discord.Embed(description=f"🔫 **Mugged {s:,} coins!**", color=discord.Color.green())
-            embed.set_image(url="[https://media.giphy.com/media/9Tq8GKRP4nwl2/giphy.gif](https://media.giphy.com/media/9Tq8GKRP4nwl2/giphy.gif)")
+            embed.set_image(url="[https://i.imgur.com/OqD8SZa.gif](https://i.imgur.com/OqD8SZa.gif)")
         else: 
             f = 100000; db["economy"][u] = max(0, db["economy"].get(u, 0) - f)
             embed = discord.Embed(description=f"🛡️ **{m.name} fought back! Fined {f:,} coins.**", color=discord.Color.dark_red())
-            embed.set_image(url="[https://media.giphy.com/media/vxvNnIYFcYqEE/giphy.gif](https://media.giphy.com/media/vxvNnIYFcYqEE/giphy.gif)")
+            embed.set_image(url="[https://i.imgur.com/1G6K2V9.gif](https://i.imgur.com/1G6K2V9.gif)")
         save_db(db); await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="heist")
@@ -680,7 +680,7 @@ class MasterCommands(commands.Cog):
         await ctx.defer()
         p = random.randint(1000000, 5000000); db.setdefault("economy", {})[str(ctx.author.id)] = db["economy"].get(str(ctx.author.id), 0) + p; save_db(db)
         embed = discord.Embed(title="🏦 BANK HEIST", description=f"You blew the vault and escaped with **{p:,} coins!**", color=discord.Color.gold())
-        embed.set_image(url="[https://media.giphy.com/media/3o7WTNMyj0MvCg2c9O/giphy.gif](https://media.giphy.com/media/3o7WTNMyj0MvCg2c9O/giphy.gif)")
+        embed.set_image(url="[https://i.imgur.com/4q6S8C2.gif](https://i.imgur.com/4q6S8C2.gif)")
         await ctx.send(embed=embed)
 
     @commands.hybrid_command(name="slots", description="Animated slot machine.")
@@ -692,38 +692,37 @@ class MasterCommands(commands.Cog):
             
         db["economy"][uid] -= bet; save_db(db)
         embed = discord.Embed(title="🎰 SLOTS 🎰", description="**[ 🎰 | 🎰 | 🎰 ]**\n*Spinning...*", color=discord.Color.dark_theme())
-        embed.set_image(url="[https://media.giphy.com/media/3o7TKSjRrfIPXiXnBm/giphy.gif](https://media.giphy.com/media/3o7TKSjRrfIPXiXnBm/giphy.gif)")
+        embed.set_image(url="[https://i.imgur.com/Z4b5n9a.gif](https://i.imgur.com/Z4b5n9a.gif)")
         embed.set_author(name=ctx.author.name, icon_url=str(ctx.author.display_avatar.url))
         msg = await ctx.send(embed=embed)
         
         r = ["🍒", "🍋", "💎", "⭐", "🔔", "🍇"]
         r1, r2, r3 = random.choice(r), random.choice(r), random.choice(r)
 
-        await asyncio.sleep(0.3); embed.description = f"**[ {r1} | 🎰 | 🎰 ]**\n*Spinning...*"; await msg.edit(embed=embed)
-        await asyncio.sleep(0.3); embed.description = f"**[ {r1} | {r2} | 🎰 ]**\n*Spinning...*"; await msg.edit(embed=embed)
-        final = f"**[ {r1} | {r2} | {r3} ]**"
+        await asyncio.sleep(0.6); embed.description = f"**[ {r1} | {r2} | {r3} ]**"
         
         if r1 == r2 == r3: 
             w = bet * 10; db["economy"][uid] += w; embed.color = discord.Color.gold()
-            embed.description = f"{final}\n\n🎉 **JACKPOT!** Won **{w:,} coins!**"
+            embed.description += f"\n\n🎉 **JACKPOT!** Won **{w:,} coins!**"
             embed.set_image(url="[https://i.imgur.com/G5y1zB3.gif](https://i.imgur.com/G5y1zB3.gif)")
         elif r1 == r2 or r2 == r3 or r1 == r3: 
             w = int(bet * 1.5); db["economy"][uid] += w; embed.color = discord.Color.green()
-            embed.description = f"{final}\n\n✨ **Small Win!** Won **{w:,} coins!**"
-            embed.set_image(url="[https://media.giphy.com/media/l0ExhcMymdL6TrZ84/giphy.gif](https://media.giphy.com/media/l0ExhcMymdL6TrZ84/giphy.gif)")
+            embed.description += f"\n\n✨ **Small Win!** Won **{w:,} coins!**"
+            embed.set_image(url="[https://i.imgur.com/8Q5Z2gJ.gif](https://i.imgur.com/8Q5Z2gJ.gif)")
         else: 
-            embed.color = discord.Color.red(); embed.description = f"{final}\n\n💥 **You lost.**"
-            embed.set_image(url="[https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif](https://media.giphy.com/media/d2lcHJTG5Tscg/giphy.gif)")
+            embed.color = discord.Color.red(); embed.description += f"\n\n💥 **You lost.**"
+            embed.set_image(url="[https://i.imgur.com/K3XyVZV.gif](https://i.imgur.com/K3XyVZV.gif)")
             
         save_db(db); embed.set_footer(text=f"New Balance: {db['economy'][uid]:,} coins"); await msg.edit(embed=embed)
-@commands.hybrid_command(name="blackjack", description="Play 21 against the bot.")
+
+    @commands.hybrid_command(name="blackjack", description="Play 21 against the bot.")
     async def blackjack(self, ctx, bet: int):
         await ctx.defer(); u = str(ctx.author.id)
         if db.setdefault("economy", {}).get(u, 0) < bet or bet <= 0: return await ctx.send(embed=discord.Embed(description="❌ Poor.", color=discord.Color.red()))
         db["economy"][u] -= bet; p, b = random.randint(15, 25), random.randint(17, 23)
         embed = discord.Embed(color=discord.Color.gold())
         if p > 21: embed.description = f"🃏 **Bust!** You: {p}, Bot: {b}. Lost."; embed.color = discord.Color.red()
-        elif p > b or b > 21: db["economy"][u] += bet*2; embed.description = f"🃏 **Win!** You: {p}, Bot: {b}. Won **{bet*2:,}**!"; embed.set_image(url="[https://media.giphy.com/media/Lndtxw3ztLhNC/giphy.gif](https://media.giphy.com/media/Lndtxw3ztLhNC/giphy.gif)")
+        elif p > b or b > 21: db["economy"][u] += bet*2; embed.description = f"🃏 **Win!** You: {p}, Bot: {b}. Won **{bet*2:,}**!"; embed.set_image(url="[https://i.imgur.com/8Q5Z2gJ.gif](https://i.imgur.com/8Q5Z2gJ.gif)")
         else: embed.description = f"🃏 **Lost.** Bot: {b}, You: {p}."; embed.color = discord.Color.red()
         save_db(db); await ctx.send(embed=embed)
 
@@ -735,7 +734,7 @@ class MasterCommands(commands.Cog):
         if db.setdefault("economy", {}).get(u, 0) < bet or bet <= 0: return await ctx.send(embed=discord.Embed(description="❌ Poor.", color=discord.Color.red()))
         db["economy"][u] -= bet; res = random.choice(["heads", "tails"])
         embed = discord.Embed()
-        if c.lower() == res: db["economy"][u] += bet*2; embed.description = f"🪙 **{res.title()}!** Won **{bet*2:,}**!"; embed.color = discord.Color.green(); embed.set_image(url="[https://media.giphy.com/media/Mab0VG2Rqarpbbku33/giphy.gif](https://media.giphy.com/media/Mab0VG2Rqarpbbku33/giphy.gif)")
+        if c.lower() == res: db["economy"][u] += bet*2; embed.description = f"🪙 **{res.title()}!** Won **{bet*2:,}**!"; embed.color = discord.Color.green(); embed.set_image(url="[https://i.imgur.com/8Q5Z2gJ.gif](https://i.imgur.com/8Q5Z2gJ.gif)")
         else: embed.description = f"🪙 **{res.title()}.** Lost."; embed.color = discord.Color.red()
         save_db(db); await ctx.send(embed=embed)
 
@@ -761,14 +760,14 @@ class MasterCommands(commands.Cog):
     # ==========================================
     # LEVELING & UTILITY
     # ==========================================
-    @commands.hybrid_command(name="rank")
+    @commands.hybrid_command(name="rank", description="Check XP Rank.")
     async def rank(self, ctx, m: discord.Member = None): 
         await ctx.defer(); t = m or ctx.author; l = db.setdefault("levels", {}).setdefault(str(t.id), {"xp": 0, "level": 1})
         embed = discord.Embed(title=f"Rank: {t.name}", description=f"⭐ Lvl: **{l['level']}**\n✨ XP: **{l['xp']}**", color=discord.Color.blue())
         embed.set_thumbnail(url=str(t.display_avatar.url))
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="leaderboard_levels")
+    @commands.hybrid_command(name="leaderboard_levels", description="Top highest levels.")
     async def leaderboard_levels(self, ctx): 
         await ctx.defer(); sl = sorted(db.get("levels", {}).items(), key=lambda x: x[1]["level"], reverse=True)
         if not sl: return await ctx.send("No data.")
@@ -891,7 +890,7 @@ class MasterCommands(commands.Cog):
     @commands.command(name="fakeban")
     async def fakeban(self, ctx, m: discord.Member): 
         e = discord.Embed(description=f"🔨 **{m.name}** permanently banned.", color=discord.Color.red())
-        e.set_image(url="[https://media.giphy.com/media/fe4dDMD2cAU5RfEaCU/giphy.gif](https://media.giphy.com/media/fe4dDMD2cAU5RfEaCU/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/8Q5Z2gJ.gif](https://i.imgur.com/8Q5Z2gJ.gif)"); await ctx.send(embed=e)
     @commands.command(name="rickroll")
     async def rickroll(self, ctx, m: discord.Member):
         try: await m.send("🎁 Nitro: [https://youtube.com/watch?v=dQw4w9WgXcQ](https://youtube.com/watch?v=dQw4w9WgXcQ)"); await ctx.send(embed=discord.Embed(description=f"🤫 Sent.", color=discord.Color.green()))
@@ -940,27 +939,27 @@ class MasterCommands(commands.Cog):
     @commands.command(name="pat")
     async def pat(self, ctx, m: discord.Member): 
         e = discord.Embed(description=f"🤚 **{ctx.author.name} patted {m.name}!**", color=discord.Color.pink())
-        e.set_image(url="[https://media.giphy.com/media/L2z7jvEQeR5v2/giphy.gif](https://media.giphy.com/media/L2z7jvEQeR5v2/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/8Q5Z2gJ.gif](https://i.imgur.com/8Q5Z2gJ.gif)"); await ctx.send(embed=e)
     @commands.command(name="punch")
     async def punch(self, ctx, m: discord.Member): 
         e = discord.Embed(description=f"👊 **{ctx.author.name} punched {m.name}!**", color=discord.Color.red())
-        e.set_image(url="[https://media.giphy.com/media/arbCGSt8TcbXq/giphy.gif](https://media.giphy.com/media/arbCGSt8TcbXq/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/K3XyVZV.gif](https://i.imgur.com/K3XyVZV.gif)"); await ctx.send(embed=e)
     @commands.command(name="bite")
     async def bite(self, ctx, m: discord.Member): 
         e = discord.Embed(description=f"🧛 **{ctx.author.name} bit {m.name}!**", color=discord.Color.dark_red())
-        e.set_image(url="[https://media.giphy.com/media/Z7x24IHBcmV7W/giphy.gif](https://media.giphy.com/media/Z7x24IHBcmV7W/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/1G6K2V9.gif](https://i.imgur.com/1G6K2V9.gif)"); await ctx.send(embed=e)
     @commands.command(name="kiss")
     async def kiss(self, ctx, m: discord.Member): 
         e = discord.Embed(description=f"💋 **{ctx.author.name} kissed {m.name}!**", color=discord.Color.magenta())
-        e.set_image(url="[https://media.giphy.com/media/G3va31oGfiIGs/giphy.gif](https://media.giphy.com/media/G3va31oGfiIGs/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/8m1fA83.gif](https://i.imgur.com/8m1fA83.gif)"); await ctx.send(embed=e)
     @commands.command(name="smug")
     async def smug(self, ctx): 
         e = discord.Embed(description=f"😏 **{ctx.author.name} is smug.**", color=discord.Color.purple())
-        e.set_image(url="[https://media.giphy.com/media/116wwYf3azFccE/giphy.gif](https://media.giphy.com/media/116wwYf3azFccE/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/OqD8SZa.gif](https://i.imgur.com/OqD8SZa.gif)"); await ctx.send(embed=e)
     @commands.command(name="cry")
     async def cry(self, ctx): 
         e = discord.Embed(description=f"😭 **{ctx.author.name} cries.**", color=discord.Color.blue())
-        e.set_image(url="[https://media.giphy.com/media/ROF8OQvDsvvXy/giphy.gif](https://media.giphy.com/media/ROF8OQvDsvvXy/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/K3XyVZV.gif](https://i.imgur.com/K3XyVZV.gif)"); await ctx.send(embed=e)
     @commands.command(name="quote")
     async def quote(self, ctx): await ctx.send(embed=discord.Embed(description=f"📜 *If you don't fight, you can't win.*", color=discord.Color.dark_theme()))
     @commands.command(name="powerlevel")
@@ -970,11 +969,11 @@ class MasterCommands(commands.Cog):
     @commands.command(name="domain_expansion")
     async def domain_expansion(self, ctx): 
         e = discord.Embed(description=f"🤞 **Domain Expansion!**", color=discord.Color.dark_blue())
-        e.set_image(url="[https://media.giphy.com/media/VeqoDqdvj2J7bNVBq1/giphy.gif](https://media.giphy.com/media/VeqoDqdvj2J7bNVBq1/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/8Q5Z2gJ.gif](https://i.imgur.com/8Q5Z2gJ.gif)"); await ctx.send(embed=e)
     @commands.command(name="bankai")
     async def bankai(self, ctx): 
         e = discord.Embed(description=f"⚔️ **BANKAI!**", color=discord.Color.red())
-        e.set_image(url="[https://media.giphy.com/media/8qDzzyxbcfimY/giphy.gif](https://media.giphy.com/media/8qDzzyxbcfimY/giphy.gif)"); await ctx.send(embed=e)
+        e.set_image(url="[https://i.imgur.com/K3XyVZV.gif](https://i.imgur.com/K3XyVZV.gif)"); await ctx.send(embed=e)
 
 async def setup(bot):
     await bot.add_cog(MasterCommands(bot))
