@@ -65,54 +65,65 @@ class AITemplateView(discord.ui.View):
         self.ctx = ctx
         self.template = template_data
 
-    async def execute_build(self, interaction: discord.Interaction, nuke: bool):
-        if interaction.user != self.ctx.author:
-            return await interaction.response.send_message("❌ You are not the architect.", ephemeral=True)
+    async def execute_build(self, nuke: bool, interaction: discord.Interaction = None, msg: discord.Message = None):
+        user = interaction.user if interaction else self.ctx.author
+        if user != self.ctx.author:
+            if interaction: return await interaction.response.send_message("❌ You are not the architect.", ephemeral=True)
+            return
             
         for child in self.children: child.disabled = True
         
         # Initial Status Update
-        await interaction.response.edit_message(embed=discord.Embed(description="⚙️ **Initializing Construction Protocol...**", color=discord.Color.orange()), view=self)
-        msg = interaction.message
+        if interaction:
+            await interaction.response.edit_message(embed=discord.Embed(description="⚙️ **Initializing Construction Protocol...**", color=discord.Color.orange()), view=self)
+            work_msg = interaction.message
+        else:
+            work_msg = msg
+            await work_msg.edit(embed=discord.Embed(description="⚙️ **Initializing Construction Protocol...**", color=discord.Color.orange()), view=self)
+
         g = self.ctx.guild
 
         if nuke:
-            await msg.edit(embed=discord.Embed(description="☢️ **Phase 1:** Eradicating old channels and roles...", color=discord.Color.red()), view=self)
+            await work_msg.edit(embed=discord.Embed(description="☢️ **Phase 1:** Eradicating old channels and roles...", color=discord.Color.red()), view=self)
             for c in g.channels:
-                try: await c.delete(); await asyncio.sleep(0.5)
+                # 🔥 THE FIX: Do not delete the channel we are currently typing the progress in!
+                if c.id == work_msg.channel.id: continue 
+                try: await c.delete(); await asyncio.sleep(0.4)
                 except: pass
             for r in g.roles:
                 if r.name != "@everyone" and not r.managed and r < g.me.top_role:
-                    try: await r.delete(); await asyncio.sleep(0.5)
+                    try: await r.delete(); await asyncio.sleep(0.4)
                     except: pass
 
         # 1. Build Roles
-        await msg.edit(embed=discord.Embed(description="🛡️ **Phase 2:** Forging server roles...", color=discord.Color.blue()), view=self)
+        await work_msg.edit(embed=discord.Embed(description="🛡️ **Phase 2:** Forging server roles...", color=discord.Color.blue()), view=self)
         for r_data in self.template.get("roles", []):
-            try: await g.create_role(name=r_data["name"], color=discord.Color(r_data["color"]), hoist=r_data["hoist"]); await asyncio.sleep(0.5)
+            try: await g.create_role(name=r_data["name"], color=discord.Color(r_data["color"]), hoist=r_data["hoist"]); await asyncio.sleep(0.4)
             except: pass
 
         # 2. Build Categories & Channels
-        await msg.edit(embed=discord.Embed(description="🏗️ **Phase 3:** Constructing categories and channels...", color=discord.Color.gold()), view=self)
+        await work_msg.edit(embed=discord.Embed(description="🏗️ **Phase 3:** Constructing categories and channels...", color=discord.Color.gold()), view=self)
         for cat_data in self.template.get("categories", []):
             try: 
                 new_cat = await g.create_category(cat_data["name"])
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.4)
                 for chan in cat_data.get("channels", []):
                     if chan["type"] == "text":
                         await g.create_text_channel(chan["name"], category=new_cat)
                     elif chan["type"] == "voice":
                         await g.create_voice_channel(chan["name"], category=new_cat)
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.4)
             except: pass
 
         # 3. Post Rules (If AI generated them)
         if self.template.get("has_rules") and self.template.get("rules_text"):
-            await msg.edit(embed=discord.Embed(description="📜 **Phase 4:** Drafting and posting server rules...", color=discord.Color.teal()), view=self)
-            # Find a channel with 'rules' in the name, otherwise pick the first text channel
+            await work_msg.edit(embed=discord.Embed(description="📜 **Phase 4:** Drafting and posting server rules...", color=discord.Color.teal()), view=self)
             rules_channel = next((c for c in g.text_channels if "rule" in c.name.lower()), None)
+            
+            # If no rules channel found, pick the first one that isn't the active work channel
             if not rules_channel and g.text_channels:
-                rules_channel = g.text_channels[0]
+                rules_channel = next((c for c in g.text_channels if c.id != work_msg.channel.id), None)
+                if not rules_channel: rules_channel = g.text_channels[0]
                 
             if rules_channel:
                 rules_embed = discord.Embed(title="📜 Official Server Rules", description=self.template["rules_text"], color=discord.Color.gold())
@@ -120,21 +131,25 @@ class AITemplateView(discord.ui.View):
                 try: await rules_channel.send(embed=rules_embed)
                 except: pass
 
-        # Find a channel to send success message
+        # Find a clean channel to send the final success ping
         for c in g.text_channels:
-            try: 
-                await c.send(embed=discord.Embed(title="✅ AI Deployment Complete", description=f"{self.ctx.author.mention}, the architecture is complete.", color=discord.Color.green()))
-                break
-            except: pass
+            if c.id != work_msg.channel.id:
+                try: 
+                    await c.send(embed=discord.Embed(title="✅ AI Deployment Complete", description=f"{self.ctx.author.mention}, the architecture is complete.", color=discord.Color.green()))
+                    break
+                except: pass
+                
+        try: await work_msg.edit(embed=discord.Embed(title="✅ Deployment Complete", description="Operations successful.", color=discord.Color.green()))
+        except: pass
         self.stop()
 
     @discord.ui.button(label="💥 Rebuild (Wipe & Replace)", style=discord.ButtonStyle.danger)
     async def rebuild_btn(self, interaction, button):
-        await self.execute_build(interaction, nuke=True)
+        await self.execute_build(nuke=True, interaction=interaction)
 
     @discord.ui.button(label="🛠️ Redesign (Add & Expand)", style=discord.ButtonStyle.success)
     async def expand_btn(self, interaction, button):
-        await self.execute_build(interaction, nuke=False)
+        await self.execute_build(nuke=False, interaction=interaction)
 
 
 # ==========================================
@@ -190,7 +205,6 @@ class Admin(commands.Cog):
     @commands.hybrid_command(name="ai_template", description="Generate an entire server layout and ruleset using an AI prompt.")
     @commands.has_permissions(administrator=True)
     async def ai_template(self, ctx, *, prompt: str):
-        # Character limit completely removed
         await ctx.defer()
         if not ai_client: return await ctx.send(embed=discord.Embed(description="🤖 **AI is offline.**", color=discord.Color.red()))
         
@@ -210,7 +224,6 @@ class Admin(commands.Cog):
         try:
             raw_res = await ask_groq([{"role": "user", "content": sys_prompt}], inject_personality=False)
             
-            # Bulletproof JSON extraction
             s, e = raw_res.find('{'), raw_res.rfind('}')
             if s == -1 or e == -1: raise Exception("AI did not return valid JSON structure.")
             clean = raw_res[s:e+1].strip()
@@ -288,7 +301,51 @@ class Admin(commands.Cog):
         if not view.value: return await msg.edit(embed=discord.Embed(description="🛑 Aborted.", color=discord.Color.grey()), view=None)
 
         view_bridge = AITemplateView(ctx, templates[template_name])
-        await view_bridge.execute_build(interaction=ctx.interaction, nuke=True)
+        await view_bridge.execute_build(nuke=True, msg=msg)
+
+
+    @commands.hybrid_command(name="deployserver", description="Wipes and builds the DEFAULT server layout.")
+    @commands.has_permissions(administrator=True)
+    async def deployserver(self, ctx):
+        view = ConfirmView(ctx)
+        msg = await ctx.send(embed=discord.Embed(title="⚠️ CLEAN SLATE PROTOCOL", description="Are you sure you want to completely WIPE and rebuild the server with the Default Template?", color=discord.Color.red()), view=view)
+        await view.wait()
+        if not view.value: return await msg.edit(embed=discord.Embed(description="🛑 Protocol Cancelled.", color=discord.Color.grey()), view=None)
+
+        await msg.edit(embed=discord.Embed(description="⚙️ Wiping channels & roles...", color=discord.Color.orange()), view=None)
+        g = ctx.guild
+        for c in g.channels:
+            if c.id == msg.channel.id: continue # 🔥 Fixed here too!
+            try: await c.delete(); await asyncio.sleep(0.4)
+            except: pass
+        for r in g.roles:
+            if r.name != "@everyone" and not r.managed and r < g.me.top_role:
+                try: await r.delete(); await asyncio.sleep(0.4)
+                except: pass
+                
+        cr = {}
+        for r in [{"name": "Admin", "color": discord.Color.red()}, {"name": "Moderator", "color": discord.Color.orange()}, {"name": "Jailed", "color": discord.Color.dark_grey()}]:
+            try: cr[r["name"]] = await g.create_role(name=r["name"], color=r["color"], permissions=discord.Permissions(administrator=(r["name"] == "Admin")), hoist=True); await asyncio.sleep(0.5)
+            except: pass
+        try: await ctx.author.add_roles(cr.get("Admin"))
+        except: pass
+        
+        ci = await g.create_category("📌 INFORMATION"); await g.create_text_channel("rules", category=ci)
+        cc = await g.create_category("💬 CHAT")
+        gc = await g.create_text_channel("general", category=cc)
+        bc = await g.create_text_channel("bot-commands", category=cc)
+        ac = await g.create_text_channel("talk-to-ai", category=cc)
+        cv = await g.create_category("🔊 VOICE"); await g.create_voice_channel("General VC", category=cv)
+        
+        if "Jailed" in cr:
+            for cat in g.categories:
+                try: await cat.set_permissions(cr["Jailed"], read_messages=False, connect=False)
+                except: pass
+                
+        db["config"]["cmd_channel"] = bc.id; db["config"]["ai_channel"] = ac.id; db["config"]["event_channel"] = gc.id; save_db(db)
+        await gc.send(embed=discord.Embed(title="✅ Default Deployment Complete", description=f"{ctx.author.mention}, server is operational.", color=discord.Color.green()))
+        try: await msg.edit(embed=discord.Embed(title="✅ Complete", description="Deployment operational.", color=discord.Color.green()))
+        except: pass
 
 
     # ==========================================
@@ -340,7 +397,7 @@ class Admin(commands.Cog):
     async def masterlist(self, ctx):
         await ctx.defer()
         embed = discord.Embed(title="📜 The Ultimate Masterlist", description="Every single command baked into the HabibiBot engine.", color=discord.Color.gold())
-        embed.add_field(name="🤖 Setup & Admin", value="`/ai_template`, `/template_save`, `/template_deploy`, `/template_list`, `/setaichannel`, `/setcmdchannel`, `/seteventchannel`\n`/gif_add`, `/gif_remove`, `/gif_list`", inline=False)
+        embed.add_field(name="🤖 Setup & Admin", value="`/ai_template`, `/template_save`, `/template_deploy`, `/template_list`, `/deployserver`, `/setaichannel`, `/setcmdchannel`, `/seteventchannel`\n`/gif_add`, `/gif_remove`, `/gif_list`", inline=False)
         embed.add_field(name="🛡️ Moderation", value="**Punishments:** `/kick`, `/ban`, `/tempban`, `/timeout`, `/jail`, `/unjail`\n**Warnings:** `/warn`, `/warnings`, `/clearwarns`\n**Security:** `/lockdown`, `/unlockdown`, `/purge`, `/nuke`, `/slowmode`\n**Logs:** `/snipe`, `/editsnipe`", inline=False)
         embed.add_field(name="💰 Economy & Hustle", value="**Money:** `/bal`, `/rich`, `/daily`, `/weekly`\n**Hustle:** `/work`, `/crime`, `/rob`, `/heist`\n**Items:** `/shop`, `/inventory`, `/trade`, `/craft`", inline=False)
         embed.add_field(name="⚔️ RPG, AI & Games", value="**AI Tools:** `/aicommand`, `/bossfight`, `/vibecheck`, `/roast_history`, `/tldr`, `/lore`, `/debate`, `/define`, `/urban`, `/gothic_translate`\n**Casino:** `/slots`, `/blackjack`, `/coinflip`\n**RPG & Levels:** `/hunt`, `/zoo`, `/sell_monster`, `/fuse_monster`, `/lootbox`, `/rank`, `/leaderboard_levels`, `/givexp`, `/quest`", inline=False)
