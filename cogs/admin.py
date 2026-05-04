@@ -1,4 +1,3 @@
-
 import discord
 from discord.ext import commands
 import json
@@ -231,39 +230,30 @@ class Admin(commands.Cog):
         embed.set_image(url=get_gif("boss_spawn"))
         await ctx.send(embed=embed, view=AIBossFightView(ctx, ai_client, chat_history))
 
-    @commands.hybrid_command(name="masterlist", description="View all 100+ bot commands in high detail.")
+    @commands.hybrid_command(name="masterlist", description="View all 100+ bot commands in one massive list.")
     async def masterlist(self, ctx):
-        e1 = discord.Embed(title="🤖 Masterlist: Admin & Setup (Page 1/6)", description="Bot configuration and setup.", color=discord.Color.blue())
-        e1.add_field(name="Setup", value="`/deployserver`, `/setaichannel`, `/setcmdchannel`, `/seteventchannel`, `/unsetchannel`", inline=False)
-        e1.add_field(name="Database GIFs", value="`/gif_add`, `/gif_remove`, `/gif_list`", inline=False)
+        await ctx.defer()
+        embed = discord.Embed(title="📜 The Ultimate Masterlist", description="Every single command baked into the HabibiBot engine.", color=discord.Color.gold())
         
-        e2 = discord.Embed(title="🛡️ Masterlist: Moderation (Page 2/6)", description="Keep the server safe.", color=discord.Color.red())
-        e2.add_field(name="Punishments", value="`/kick`, `/ban`, `/tempban`, `/tempmute`, `/jail`, `/unjail`", inline=False)
-        e2.add_field(name="Warnings", value="`/warn`, `/warnings`, `/clearwarns`", inline=False)
-        e2.add_field(name="Security", value="`/lockdown`, `/unlockdown`, `/purge`, `/nuke`, `/slowmode`", inline=False)
-        e2.add_field(name="Logs", value="`/snipe`, `/editsnipe`", inline=False)
-
-        e3 = discord.Embed(title="💰 Masterlist: Economy (Page 3/6)", description="Get rich or die trying.", color=discord.Color.gold())
-        e3.add_field(name="Money", value="`/bal`, `/rich`, `/daily`, `/weekly`, `/give`", inline=False)
-        e3.add_field(name="Hustle", value="`/work`, `/crime`, `/rob`, `/heist`, `/bounty`, `/claimbounty`", inline=False)
-        e3.add_field(name="Items", value="`/shop`, `/inventory`, `/trade`", inline=False)
+        # Admin & Setup
+        embed.add_field(name="🤖 Setup & Admin", value="`/deployserver`, `/setaichannel`, `/setcmdchannel`, `/seteventchannel`, `/unsetchannel`\n`/gif_add`, `/gif_remove`, `/gif_list`", inline=False)
         
-        e4 = discord.Embed(title="⚔️ Masterlist: RPG, AI & Games (Page 4/6)", description="Features and utilities.", color=discord.Color.green())
-        e4.add_field(name="AI Tools", value="`/aicommand`, `/bossfight`, `/vibecheck`, `/roast_history`, `/tldr`, `/lore`, `/debate`, `/define`, `/urban`, `/forceevent`, `/gothic_translate`", inline=False)
-        e4.add_field(name="Casino", value="`/slots`, `/blackjack`, `/coinflip`", inline=False)
-        e4.add_field(name="RPG & Levels", value="`/level`, `/leaderboard_levels`, `/givexp`, `/removexp`, `/setlevel`, `/rewards`, `/fish`, `/hunt`, `/mine`, `/quest`", inline=False)
-
-        e5 = discord.Embed(title="⚙️ Masterlist: Utilities (Page 5/6)", description="Helpful server tools.", color=discord.Color.light_grey())
-        e5.add_field(name="Social", value="`/rep`, `/leaderboard_rep`, `/poll`, `/remindme`, `/afk`", inline=False)
-        e5.add_field(name="Stats", value="`/userhistory`, `/roleinfo`, `/servericon`, `/avatar`, `/serverinfo`, `/ping`", inline=False)
-        e5.add_field(name="Misc", value="`/giveaway_start`, `/giveaway_reroll`, `/ticket_setup`, `/ticket_close`, `/weather`, `/calc`, `/translate`", inline=False)
-
-        e6 = discord.Embed(title="🤡 Masterlist: Prefix (Page 6/6)", description="**Use `!` for these (e.g., `!hack`)**", color=discord.Color.purple())
-        e6.add_field(name="Trolls", value="`!fakeban`, `!rickroll`, `!roast`, `!compliment`, `!confess`, `!kill`, `!revive`, `!meme`, `!dadjoke`, `!choose`, `!spank`, `!jailbreak`, `!eightball`, `!hack`, `!ship`", inline=False)
-        e6.add_field(name="Raters", value="`!howgay`, `!simpmeter`, `!susmeter`", inline=False)
-        e6.add_field(name="Anime Actions", value="`!pat`, `!punch`, `!bite`, `!kiss`, `!smug`, `!cry`, `!quote`, `!powerlevel`, `!domain_expansion`, `!bankai`", inline=False)
+        # Moderation
+        embed.add_field(name="🛡️ Moderation", value="**Punishments:** `/kick`, `/ban`, `/tempban`, `/tempmute`, `/jail`, `/unjail`\n**Warnings:** `/warn`, `/warnings`, `/clearwarns`\n**Security:** `/lockdown`, `/unlockdown`, `/purge`, `/nuke`, `/slowmode`\n**Logs:** `/snipe`, `/editsnipe`", inline=False)
         
-        await ctx.send(embed=e1, view=PaginationView(ctx, [e1, e2, e3, e4, e5, e6]))
+        # Economy
+        embed.add_field(name="💰 Economy & Hustle", value="**Money:** `/bal`, `/rich`, `/daily`, `/weekly`, `/give`\n**Hustle:** `/work`, `/crime`, `/rob`, `/heist`, `/bounty`, `/claimbounty`\n**Items:** `/shop`, `/inventory`, `/trade`", inline=False)
+        
+        # RPG, AI & Games
+        embed.add_field(name="⚔️ RPG, AI & Games", value="**AI Tools:** `/aicommand`, `/bossfight`, `/vibecheck`, `/roast_history`, `/tldr`, `/lore`, `/debate`, `/define`, `/urban`, `/forceevent`, `/gothic_translate`\n**Casino:** `/slots`, `/blackjack`, `/coinflip`\n**RPG & Levels:** `/hunt`, `/zoo`, `/sell_monster`, `/fuse_monster`, `/lootbox`, `/rank`, `/leaderboard_levels`, `/givexp`, `/removexp`, `/setlevel`, `/rewards`, `/fish`, `/mine`, `/quest`", inline=False)
+
+        # Utilities
+        embed.add_field(name="⚙️ Utilities", value="**Social:** `/rep`, `/leaderboard_rep`, `/poll`, `/remindme`, `/afk`\n**Stats:** `/userhistory`, `/roleinfo`, `/servericon`, `/avatar`, `/serverinfo`, `/ping`\n**Misc:** `/giveaway_start`, `/giveaway_reroll`, `/ticket_setup`, `/ticket_close`, `/weather`, `/calc`, `/translate`", inline=False)
+
+        # Prefix Commands
+        embed.add_field(name="🤡 Prefix Trolls & Anime (Use !)", value="**Trolls:** `!fakeban`, `!rickroll`, `!roast`, `!compliment`, `!confess`, `!kill`, `!revive`, `!meme`, `!dadjoke`, `!choose`, `!spank`, `!jailbreak`, `!eightball`, `!hack`, `!ship`\n**Raters:** `!howgay`, `!simpmeter`, `!susmeter`\n**Anime Actions:** `!pat`, `!punch`, `!bite`, `!kiss`, `!smug`, `!cry`, `!quote`, `!powerlevel`, `!domain_expansion`, `!bankai`", inline=False)
+
+        await ctx.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
