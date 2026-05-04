@@ -1,69 +1,278 @@
-
 import discord
 from discord.ext import commands, tasks
 import random
-import asyncio
+import time
 import json
+import asyncio
 from core import db, save_db, get_gif, ask_groq, ai_client
-from ui import DynamicShopView, PaginationView
+from ui import PaginationView
 
 # ========================================================================
-# UI CLASS: Interactive Server Heist
+# THE MASTER ITEM REGISTRY (End-Game Scaling)
 # ========================================================================
-class HeistView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=30)
-        self.crew = set()
+MASTER_ITEMS = {
+    "Common": {
+        "chance": 50.0, 
+        "color": "⚪",
+        "items": [
+            {"name": "Iron Dagger", "price": 10000}, 
+            {"name": "Wooden Buckler", "price": 12000},
+            {"name": "Torn Cloak", "price": 8000}
+        ]
+    },
+    "Uncommon": {
+        "chance": 25.0, 
+        "color": "🟢",
+        "items": [
+            {"name": "Steel Katana", "price": 35000}, 
+            {"name": "Hunter's Bow", "price": 38000},
+            {"name": "Iron Gauntlets", "price": 40000}
+        ]
+    },
+    "Rare": {
+        "chance": 14.0, 
+        "color": "🔵",
+        "items": [
+            {"name": "Obsidian Blade", "price": 150000}, 
+            {"name": "Abyssal Grimoire", "price": 180000},
+            {"name": "Assassin's Cowl", "price": 165000}
+        ]
+    },
+    "Epic": {
+        "chance": 8.0, 
+        "color": "🟣",
+        "items": [
+            {"name": "Void Scythe", "price": 500000}, 
+            {"name": "Returner's Watch", "price": 600000},
+            {"name": "Staff of Embers", "price": 550000}
+        ]
+    },
+    "Legendary": {
+        "chance": 2.4, 
+        "color": "🟡",
+        "items": [
+            {"name": "Cursed Dual Katana", "price": 2500000}, 
+            {"name": "Blade of the Cosmos", "price": 2500000},
+            {"name": "Sun God's Aegis", "price": 3000000}
+        ]
+    },
+    "Mythic": {
+        "chance": 0.5, 
+        "color": "🌌",
+        "items": [
+            {"name": "Primordial Rune", "price": 15000000}, 
+            {"name": "Ji Realm Core", "price": 20000000},
+            {"name": "Worldbreaker Hammer", "price": 18000000}
+        ]
+    },
+    "Secret": {
+        "chance": 0.1, 
+        "color": "💠",
+        "items": [
+            {"name": "Aizen's Hogyoku Fragment", "price": 50000000}, 
+            {"name": "Eye of the Leviathan", "price": 65000000},
+            {"name": "Soul King's Crown", "price": 75000000}
+        ]
+    }
+}
 
-    @discord.ui.button(label="🔫 Join Crew", style=discord.ButtonStyle.danger)
-    async def join_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+def roll_stock():
+    stock = []
+    rarities = list(MASTER_ITEMS.keys())
+    weights = [MASTER_ITEMS[r]["chance"] for r in rarities]
+    
+    for _ in range(4):
+        r = random.choices(rarities, weights=weights, k=1)[0]
+        item = random.choice(MASTER_ITEMS[r]["items"])
+        stock.append({
+            "name": item["name"], 
+            "price": item["price"], 
+            "rarity": r,
+            "icon": MASTER_ITEMS[r]["color"]
+        })
+    return stock
+
+# ========================================================================
+# UI CLASS: DYNAMIC SHOP BUTTONS
+# ========================================================================
+class DynamicShopView(discord.ui.View):
+    def __init__(self, items):
+        super().__init__(timeout=None)
+        for idx, item in enumerate(items):
+            btn = discord.ui.Button(label=f"Buy {item['name']}", style=discord.ButtonStyle.secondary, custom_id=f"shop_{idx}")
+            btn.callback = self.create_callback(item)
+            self.add_item(btn)
+
+    def create_callback(self, item):
+        async def buy_callback(interaction: discord.Interaction):
+            uid = str(interaction.user.id)
+            bal = db.setdefault("economy", {}).get(uid, 0)
+            
+            if bal < item["price"]:
+                return await interaction.response.send_message(f"❌ You are too broke! You need **{item['price']:,} 🪙** to buy this.", ephemeral=True)
+                
+            db["economy"][uid] -= item["price"]
+            full_item_name = f"{item['icon']} {item['name']} [{item['rarity']}]"
+            db.setdefault("inventory", {}).setdefault(uid, []).append(full_item_name)
+            save_db(db)
+            
+            await interaction.response.send_message(f"🛒 **Transaction Complete!** You purchased **{full_item_name}** for **{item['price']:,} 🪙**!", ephemeral=True)
+        return buy_callback
+
+
+# ========================================================================
+# UI CLASSES: INTERACTIVE FORGE HUB (Select Menus & Modals)
+# ========================================================================
+class AwakenModal(discord.ui.Modal, title="Awaken Artifact"):
+    item_name = discord.ui.TextInput(label="Exact Artifact Name", placeholder="e.g. Obsidian Blade", required=True)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         uid = str(interaction.user.id)
-        if uid in self.crew:
-            return await interaction.response.send_message("❌ You are already in the getaway van!", ephemeral=True)
+        inv = db.setdefault("inventory", {}).get(uid, [])
+        exact_item_name = self.item_name.value.strip()
+        
+        exact_match = next((i for i in inv if exact_item_name.lower() in i.lower()), None)
+        
+        if not exact_match:
+            return await interaction.followup.send(f"❌ You do not own an item matching `{exact_item_name}`.", ephemeral=True)
             
-        bal = db.setdefault("economy", {}).get(uid, 0)
-        if bal < 50000:
-            return await interaction.response.send_message("❌ You need at least 50,000 🪙 to buy heist gear to participate.", ephemeral=True)
+        if inv.count(exact_match) < 2:
+            return await interaction.followup.send(f"❌ You need **2x** of `{exact_match}` to Awaken it. You only have 1.", ephemeral=True)
             
-        self.crew.add(uid)
-        await interaction.response.send_message(f"✅ You strapped up and joined the crew! ({len(self.crew)} members ready)", ephemeral=True)
+        db["inventory"][uid].remove(exact_match)
+        db["inventory"][uid].remove(exact_match)
+        
+        awakened_item = exact_match.replace("[", "").replace("]", "").strip() 
+        new_item = f"🔥 {awakened_item} [AWAKENED]"
+        db["inventory"][uid].append(new_item)
+        save_db(db)
+        
+        embed = discord.Embed(title="⚒️ AWAKENING SUCCESSFUL", description=f"You sacrificed two **{exact_match}**s to the Forge...", color=discord.Color.gold())
+        embed.add_field(name="God-Tier Artifact Created:", value=f"**{new_item}**", inline=False)
+        await interaction.followup.send(embed=embed)
+
+
+class ForgeSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="View Weekly Blueprint", emoji="📜", description="See the AI Grandmaster's current recipe.", value="view"),
+            discord.SelectOption(label="Check My Materials", emoji="🎒", description="Scan your inventory for required components.", value="check"),
+            discord.SelectOption(label="Forge Secret Artifact", emoji="🔮", description="Consume materials to craft the AI weapon.", value="craft"),
+            discord.SelectOption(label="Awaken Artifact", emoji="🔥", description="Combine 2 duplicate items for a massive upgrade.", value="awaken")
+        ]
+        super().__init__(placeholder="Select a Forge Operation...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        uid = str(interaction.user.id)
+        action = self.values[0]
+        rec = db.get("weekly_recipe")
+
+        # Handle AWAKEN (Triggers Modal, must be done before deferring)
+        if action == "awaken":
+            return await interaction.response.send_modal(AwakenModal())
+
+        await interaction.response.defer()
+
+        # Check if recipe exists for the other 3 actions
+        if not rec and action in ["view", "check", "craft"]:
+            return await interaction.followup.send("❌ The AI Forge is currently closed. Wait for the weekly reset.", ephemeral=True)
+
+        inv = db.setdefault("inventory", {}).get(uid, [])
+        i1_match = next((i for i in inv if rec['item1'].lower() in i.lower()), None)
+        i2_match = next((i for i in inv if rec['item2'].lower() in i.lower()), None)
+
+        if action == "view":
+            time_left = max(0, int(db.get("recipe_expiry", 0) - time.time()))
+            days, rem = divmod(time_left, 86400)
+            hours, mins = divmod(rem, 3600)
+            
+            embed = discord.Embed(title="📜 The Grandmaster's Weekly Blueprint", description="*Gather these specific items from the Hourly Shop to forge a legendary artifact!*", color=discord.Color.blurple())
+            embed.add_field(name="Required Materials", value=f"🔹 1x **{rec['item1']}**\n🔹 1x **{rec['item2']}**", inline=False)
+            embed.add_field(name="Resulting Artifact", value=f"🔮 **{rec['result_name']}**\n*{rec['desc']}*", inline=False)
+            embed.set_footer(text=f"⏳ Recipe rotates in {days}d {hours}h {mins//60}m.")
+            await interaction.message.edit(embed=embed)
+
+        elif action == "check":
+            status1 = f"✅ You have this: **{i1_match}**" if i1_match else f"❌ Missing: **{rec['item1']}**"
+            status2 = f"✅ You have this: **{i2_match}**" if i2_match else f"❌ Missing: **{rec['item2']}**"
+            
+            embed = discord.Embed(title="🎒 Material Scanner", description="Scanning your `/inventory` for the required weekly materials...", color=discord.Color.dark_grey())
+            embed.add_field(name="Component 1", value=status1, inline=False)
+            embed.add_field(name="Component 2", value=status2, inline=False)
+            await interaction.message.edit(embed=embed)
+
+        elif action == "craft":
+            if not i1_match or not i2_match:
+                return await interaction.followup.send(f"❌ You lack the materials to Forge this! Use 'Check My Materials' to see what you need.", ephemeral=True)
+                
+            # Deduct items
+            db["inventory"][uid].remove(i1_match)
+            db["inventory"][uid].remove(i2_match)
+            
+            # Add the AI item
+            full_artifact = f"🔮 {rec['result_name']} [SECRET FORGE]"
+            db["inventory"][uid].append(full_artifact)
+            save_db(db)
+            
+            embed = discord.Embed(title="🌌 SECRET FORGE COMPLETE", description=f"You combined **{i1_match}** and **{i2_match}** at the altar...", color=discord.Color.dark_purple())
+            embed.add_field(name="A mythical artifact was born:", value=f"**{full_artifact}**\n*{rec['desc']}*", inline=False)
+            await interaction.message.edit(embed=embed)
+
+class ForgeHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+        self.add_item(ForgeSelect())
 
 
 # ========================================================================
-# COG CLASS: Economy & Grinding
+# COG CLASS: Economy, Shop, & AI Forge
 # ========================================================================
 class Economy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.shop_restock.start()
+        self.background_loops.start()
 
     def cog_unload(self):
-        self.shop_restock.cancel()
+        self.background_loops.cancel()
 
     # ========================================================================
-    # BACKGROUND TASK: AI Dynamic Shop Generation
-    # Description: Generates 4 unique items every hour.
+    # BACKGROUND TASKS: Hourly Shop & Weekly AI Recipe
     # ========================================================================
     @tasks.loop(hours=1)
-    async def shop_restock(self):
-        if not ai_client: return
-        try:
-            prompt = "You are an RPG merchant. Generate 4 highly unique, epic, and weird items for a game shop. Output ONLY a raw JSON array of 4 objects. Keys: 'name' (string with an emoji), 'price' (integer between 50000 and 2000000), 'desc' (short funny string). No markdown."
-            raw_res = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
+    async def background_loops(self):
+        # 1. Update Hourly Shop
+        db["current_shop"] = roll_stock()
+        
+        # 2. Check Weekly AI Recipe
+        current_time = time.time()
+        expiry_time = db.get("recipe_expiry", 0)
+        
+        if current_time >= expiry_time and ai_client:
+            print("⚙️ [SYSTEM] Generating new Weekly AI Forge Recipe...")
+            all_items = [i["name"] for cat in MASTER_ITEMS.values() for i in cat["items"]]
             
-            clean = raw_res.replace('```json', '').replace('```', '').strip()
-            s, e = clean.find('['), clean.rfind(']')
-            items = json.loads(clean[s:e+1])
+            prompt = f"""You are the Grandmaster Blacksmith. Pick EXACTLY TWO different items from this list: {all_items}. 
+            Fuse them into a God-Tier, ultra-powerful weapon. Output ONLY a raw JSON object.
+            SCHEMA: {{"item1": "Exact Name from list", "item2": "Exact Name from list", "result_name": "Epic Custom Name", "desc": "Cool Lore"}}"""
             
-            db["current_shop"] = items
-            save_db(db)
-        except Exception as e:
-            print(f"⚠️ AI Shop Restock Failed: {e}")
+            try:
+                res = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
+                start, end = res.find('{'), res.rfind('}')
+                if start == -1 or end == -1: raise Exception("JSON format hallucination.")
+                
+                recipe_data = json.loads(res[start:end+1])
+                db["weekly_recipe"] = recipe_data
+                db["recipe_expiry"] = current_time + 604800 # 7 Days
+                print(f"✅ [SYSTEM] New Recipe Live: {recipe_data['result_name']}")
+            except Exception as e:
+                print(f"⚠️ [SYSTEM] AI Recipe Generation Failed: {e}")
+                
+        save_db(db)
 
-    @shop_restock.before_loop
-    async def before_restock(self):
+    @background_loops.before_loop
+    async def before_loops(self):
         await self.bot.wait_until_ready()
-
 
     # ========================================================================
     # BANK & LEADERBOARD
@@ -73,9 +282,7 @@ class Economy(commands.Cog):
         await ctx.defer()
         target = member or ctx.author
         uid = str(target.id)
-        
         bal = db.setdefault("economy", {}).get(uid, 0)
-        
         embed = discord.Embed(title=f"💳 {target.name}'s Bank Account", description=f"**Net Worth:** {bal:,} 🪙", color=discord.Color.gold())
         embed.set_thumbnail(url=str(target.display_avatar.url))
         await ctx.send(embed=embed)
@@ -83,256 +290,112 @@ class Economy(commands.Cog):
     @commands.hybrid_command(name="rich", description="View the wealthiest players in the server.")
     async def rich(self, ctx):
         await ctx.defer()
-        # Sort economy dictionary by value (coins) descending
         sorted_eco = sorted(db.get("economy", {}).items(), key=lambda x: x[1], reverse=True)
-        
-        if not sorted_eco:
-            return await ctx.send(embed=discord.Embed(description="The server is completely broke.", color=discord.Color.red()))
-            
+        if not sorted_eco: return await ctx.send(embed=discord.Embed(description="The server is empty.", color=discord.Color.red()))
         embed = discord.Embed(title="🏆 The Forbes Rich List", color=discord.Color.gold())
-        
         board = ""
         for i, (uid, coins) in enumerate(sorted_eco[:10]):
             medal = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else "💸"
             board += f"{medal} **<@{uid}>** — {coins:,} 🪙\n"
-            
         embed.description = board
         await ctx.send(embed=embed)
 
-
     # ========================================================================
-    # DAILY & WEEKLY CLAIM
+    # INCOME & HUSTLE
     # ========================================================================
-    @commands.hybrid_command(name="daily", description="Claim your daily 500,000 coins.")
+    @commands.hybrid_command(name="daily", description="Claim your daily coins.")
     @commands.cooldown(1, 86400, commands.BucketType.user)
     async def daily(self, ctx):
         await ctx.defer()
         uid = str(ctx.author.id)
-        db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + 500000
-        save_db(db)
-        
-        embed = discord.Embed(title="📅 Daily Reward", description="You claimed your daily **500,000 🪙**!", color=discord.Color.green())
-        await ctx.send(embed=embed)
+        db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + 500000; save_db(db)
+        await ctx.send(embed=discord.Embed(description="📅 You claimed your daily **500,000 🪙**!", color=discord.Color.green()))
 
-    @commands.hybrid_command(name="weekly", description="Claim your weekly 5,000,000 coins.")
-    @commands.cooldown(1, 604800, commands.BucketType.user)
-    async def weekly(self, ctx):
-        await ctx.defer()
-        uid = str(ctx.author.id)
-        db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + 5000000
-        save_db(db)
-        
-        embed = discord.Embed(title="📅 Weekly Reward", description="You claimed your massive weekly **5,000,000 🪙**!", color=discord.Color.gold())
-        await ctx.send(embed=embed)
-
-
-    # ========================================================================
-    # GRINDING: WORK & CRIME
-    # ========================================================================
     @commands.hybrid_command(name="work", description="Work an honest job for coins.")
     @commands.cooldown(1, 3600, commands.BucketType.user)
     async def work(self, ctx):
         await ctx.defer()
         uid = str(ctx.author.id)
         earned = random.randint(50000, 150000)
-        
-        jobs = [
-            f"You flipped burgers at McDonald's and earned **{earned:,} 🪙**.",
-            f"You coded a Discord bot in Python and sold it for **{earned:,} 🪙**.",
-            f"You mowed lawns in the neighborhood and made **{earned:,} 🪙**.",
-            f"You streamed on Twitch to 3 viewers and got donated **{earned:,} 🪙**."
-        ]
-        
-        db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + earned
-        save_db(db)
-        
-        embed = discord.Embed(description=f"💼 {random.choice(jobs)}", color=discord.Color.blue())
-        embed.set_image(url=get_gif("work"))
-        await ctx.send(embed=embed)
+        db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + earned; save_db(db)
+        await ctx.send(embed=discord.Embed(description=f"💼 You worked hard and earned **{earned:,} 🪙**.", color=discord.Color.blue()))
 
-    @commands.hybrid_command(name="crime", description="Commit a crime. High risk, high reward.")
-    @commands.cooldown(1, 3600, commands.BucketType.user)
-    async def crime(self, ctx):
-        await ctx.defer()
-        uid = str(ctx.author.id)
-        bal = db.setdefault("economy", {}).get(uid, 0)
-        
-        if random.choice([True, False]): # 50% chance to succeed
-            earned = random.randint(150000, 400000)
-            db["economy"][uid] += earned
-            crimes = [
-                f"You successfully hacked the Pentagon and stole **{earned:,} 🪙**!",
-                f"You robbed a convenience store and got away with **{earned:,} 🪙**!",
-                f"You sold illegal anime figures and made **{earned:,} 🪙**!"
-            ]
-            embed = discord.Embed(description=f"🦹‍♂️ {random.choice(crimes)}", color=discord.Color.green())
-            embed.set_image(url=get_gif("crime_win"))
-        else:
-            fine = random.randint(50000, 150000)
-            db["economy"][uid] = max(0, bal - fine)
-            embed = discord.Embed(description=f"🚓 **BUSTED!** The police caught you. You were fined **{fine:,} 🪙**.", color=discord.Color.red())
-            embed.set_image(url=get_gif("crime_lose"))
-            
-        save_db(db)
-        await ctx.send(embed=embed)
-
-
-    # ========================================================================
-    # STEALING & HEISTS
-    # ========================================================================
     @commands.hybrid_command(name="rob", description="Attempt to steal from another player's bank.")
     @commands.cooldown(1, 7200, commands.BucketType.user)
     async def rob(self, ctx, member: discord.Member):
         await ctx.defer()
-        uid = str(ctx.author.id)
-        tid = str(member.id)
+        uid, tid = str(ctx.author.id), str(member.id)
+        if member.bot or uid == tid: return await ctx.send("❌ Invalid target.")
         
-        # 🛡️ EXPLOIT PATCHES
-        if member.bot:
-            return await ctx.send(embed=discord.Embed(description="❌ You can't rob a bot. They have firewall protection.", color=discord.Color.red()))
-        if uid == tid:
-            return await ctx.send(embed=discord.Embed(description="❌ You tried to rob yourself. Are you okay?", color=discord.Color.red()))
-            
         robber_bal = db.setdefault("economy", {}).get(uid, 0)
         target_bal = db.setdefault("economy", {}).get(tid, 0)
         
-        if robber_bal < 100000:
-            return await ctx.send(embed=discord.Embed(description="❌ You need at least **100,000 🪙** as collateral to rob someone.", color=discord.Color.red()))
-        if target_bal < 100000:
-            return await ctx.send(embed=discord.Embed(description=f"❌ **{member.name}** is too poor to rob. Leave them alone.", color=discord.Color.red()))
+        if robber_bal < 100000: return await ctx.send("❌ You need **100,000 🪙** collateral in your bank to rob someone.")
+        if target_bal < 100000: return await ctx.send("❌ They are too poor to rob.")
             
-        if random.randint(1, 100) <= 40: # 40% success rate
-            stolen = int(target_bal * random.uniform(0.1, 0.3)) # Steal 10% to 30%
-            db["economy"][uid] += stolen
-            db["economy"][tid] -= stolen
-            embed = discord.Embed(description=f"🥷 **SUCCESS!** You broke into {member.mention}'s vault and stole **{stolen:,} 🪙**!", color=discord.Color.green())
-            embed.set_image(url=get_gif("rob_win"))
+        if random.randint(1, 100) <= 40: 
+            stolen = int(target_bal * random.uniform(0.1, 0.3))
+            db["economy"][uid] += stolen; db["economy"][tid] -= stolen
+            embed = discord.Embed(description=f"🥷 **SUCCESS!** You broke in and stole **{stolen:,} 🪙** from {member.mention}!", color=discord.Color.green())
         else:
-            fine = int(robber_bal * 0.15) # Lose 15% of your bank to the target
-            db["economy"][uid] -= fine
-            db["economy"][tid] += fine
-            embed = discord.Embed(description=f"🚨 **CAUGHT!** {member.mention} caught you slipping. You had to pay them **{fine:,} 🪙** in damages.", color=discord.Color.red())
-            embed.set_image(url=get_gif("rob_lose"))
+            fine = int(robber_bal * 0.15)
+            db["economy"][uid] -= fine; db["economy"][tid] += fine
+            embed = discord.Embed(description=f"🚨 **CAUGHT!** You got busted and paid a **{fine:,} 🪙** fine to {member.mention}.", color=discord.Color.red())
             
         save_db(db)
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name="heist", description="Start a server-wide vault heist.")
-    @commands.cooldown(1, 14400, commands.BucketType.guild) # Once per 4 hours per server
-    async def heist(self, ctx):
-        view = HeistView()
-        embed = discord.Embed(title="🏦 VAULT HEIST INITIATED", description=f"**{ctx.author.name}** is organizing a bank heist!\n\nYou have **30 seconds** to join the crew. You need at least **3 members** to pull this off.", color=discord.Color.dark_red())
-        embed.set_image(url=get_gif("heist"))
-        
-        msg = await ctx.send(embed=embed, view=view)
-        await asyncio.sleep(30)
-        
-        # Lock the view
-        for child in view.children: child.disabled = True
-        await msg.edit(view=view)
-        
-        if len(view.crew) < 3:
-            return await ctx.send(embed=discord.Embed(description="🚓 **HEIST FAILED!** Not enough people joined the crew. The driver got scared and bailed.", color=discord.Color.red()))
-            
-        if random.choice([True, False]): # 50% chance for the whole crew
-            total_loot = random.randint(5000000, 15000000)
-            split = total_loot // len(view.crew)
-            
-            mentions = []
-            for crew_id in view.crew:
-                db["economy"][crew_id] = db.setdefault("economy", {}).get(crew_id, 0) + split
-                mentions.append(f"<@{crew_id}>")
-                
-            save_db(db)
-            await ctx.send(embed=discord.Embed(title="💰 HEIST SUCCESSFUL!", description=f"The crew blew the vault open and stole **{total_loot:,} 🪙**!\n\n**Payout per member:** {split:,} 🪙\n**Crew:** {', '.join(mentions)}", color=discord.Color.green()))
-        else:
-            mentions = []
-            for crew_id in view.crew:
-                fine = 250000
-                db["economy"][crew_id] = max(0, db.setdefault("economy", {}).get(crew_id, 0) - fine)
-                mentions.append(f"<@{crew_id}>")
-                
-            save_db(db)
-            await ctx.send(embed=discord.Embed(title="🚨 SWAT DEPLOYED", description=f"The heist was a setup! The crew was ambushed by SWAT and fined **250,000 🪙** each.\n\n**Busted:** {', '.join(mentions)}", color=discord.Color.dark_red()))
-
-
     # ========================================================================
-    # AI SHOP & CRAFTING
+    # FOMO SHOP & INVENTORY
     # ========================================================================
-    @commands.hybrid_command(name="shop", description="Browse the AI generated Black Market items.")
+    @commands.hybrid_command(name="shop", aliases=["store"], description="Browse the rotating Hourly Stock.")
     async def shop(self, ctx):
         await ctx.defer()
         shop_items = db.get("current_shop", [])
+        
         if not shop_items:
-            return await ctx.send(embed=discord.Embed(description="📦 The shop is currently empty. Waiting for AI restock...", color=discord.Color.red()))
+            db["current_shop"] = roll_stock(); save_db(db)
+            shop_items = db["current_shop"]
             
-        embed = discord.Embed(title="🛒 The Black Market", description="These mysterious items were generated by the AI.\nClick a button to purchase an item.", color=discord.Color.blurple())
+        embed = discord.Embed(title="🛒 The Traveling Merchant", description="*\"My stock rotates every hour. Buy it while you can!\"*\n", color=discord.Color.dark_teal())
+        
         for item in shop_items:
-            embed.add_field(name=f"{item['name']}", value=f"💰 **Price:** {item['price']:,} 🪙\n*\"{item['desc']}\"*", inline=False)
+            highlight = "**" if item['rarity'] in ["Mythic", "Secret"] else ""
+            embed.add_field(
+                name=f"{item['icon']} {highlight}{item['name']}{highlight}", 
+                value=f"💎 **Rarity:** {item['rarity']}\n💰 **Price:** {item['price']:,} 🪙", 
+                inline=False
+            )
             
+        embed.set_footer(text="Stock resets at the top of the hour! ⏳")
         await ctx.send(embed=embed, view=DynamicShopView(shop_items))
 
-    @commands.hybrid_command(name="inventory", aliases=["inv"], description="View your purchased items.")
+    @commands.hybrid_command(name="inventory", aliases=["inv"], description="View your purchased weapons and items.")
     async def inventory(self, ctx, member: discord.Member = None):
         await ctx.defer()
         target = member or ctx.author
-        uid = str(target.id)
+        inv = db.get("inventory", {}).get(str(target.id), [])
         
-        inv = db.get("inventory", {}).get(uid, [])
-        if not inv:
+        if not inv: 
             return await ctx.send(embed=discord.Embed(description=f"🎒 {target.name}'s inventory is completely empty.", color=discord.Color.red()))
             
-        # Count duplicates dynamically
         item_counts = {}
         for item in inv: item_counts[item] = item_counts.get(item, 0) + 1
             
         lines = [f"**{item}** x{count}" for item, count in item_counts.items()]
         chunks = [lines[i:i + 10] for i in range(0, len(lines), 10)]
-        
         embeds = [discord.Embed(title=f"🎒 {target.name}'s Inventory ({i+1}/{len(chunks)})", description="\n".join(chunk), color=discord.Color.dark_green()) for i, chunk in enumerate(chunks)]
+        
         await ctx.send(embed=embeds[0], view=PaginationView(ctx, embeds))
 
-    @commands.hybrid_command(name="craft", description="Fuse two items together to create a God-tier AI weapon.")
-    async def craft(self, ctx, item1: str, item2: str):
-        await ctx.defer()
-        uid = str(ctx.author.id)
-        inv = db.setdefault("inventory", {}).get(uid, [])
-        
-        # Case insensitive exact matching
-        exact_i1 = next((i for i in inv if i.lower() == item1.lower()), None)
-        exact_i2 = next((i for i in inv if i.lower() == item2.lower()), None)
-        
-        # If they try to fuse the exact same item, ensure they have at least 2 of them
-        if exact_i1 and exact_i1 == exact_i2 and inv.count(exact_i1) < 2:
-            return await ctx.send(embed=discord.Embed(description=f"❌ You need **2x** of `{exact_i1}` to craft with it twice.", color=discord.Color.red()))
-            
-        if not exact_i1 or not exact_i2:
-            return await ctx.send(embed=discord.Embed(description="❌ You do not own those items. Check your exact spelling in `/inventory`.", color=discord.Color.red()))
-            
-        if not ai_client: return await ctx.send(embed=discord.Embed(description="❌ The AI Forge is offline.", color=discord.Color.red()))
-            
-        prompt = f"I am fusing the item '{exact_i1}' and the item '{exact_i2}'. Generate a highly destructive, God-tier weapon/item. Output ONLY a raw JSON object with keys: 'name' (string with an epic emoji) and 'desc' (epic string). No markdown."
-        
-        try:
-            res = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
-            clean = res.replace('```json', '').replace('```', '').strip()
-            s, e = clean.find('{'), clean.rfind('}')
-            crafted = json.loads(clean[s:e+1])
-            
-            # Remove old items
-            db["inventory"][uid].remove(exact_i1)
-            db["inventory"][uid].remove(exact_i2)
-            
-            # Add new item
-            full_name = f"⚒️ {crafted['name']} (Forged)"
-            db["inventory"][uid].append(full_name)
-            save_db(db)
-            
-            embed = discord.Embed(title="⚒️ FORGE SUCCESSFUL", description=f"You sacrificed **{exact_i1}** and **{exact_i2}**...", color=discord.Color.dark_purple())
-            embed.add_field(name=full_name, value=f"*{crafted['desc']}*", inline=False)
-            await ctx.send(embed=embed)
-        except Exception as e:
-            await ctx.send(embed=discord.Embed(description="❌ The forge overheated and failed. Your items are safe.", color=discord.Color.red()))
+    # ========================================================================
+    # THE UNIFIED FORGE DASHBOARD
+    # ========================================================================
+    @commands.hybrid_command(name="forge", aliases=["craft", "recipe"], description="Open the Interactive Forge Hub.")
+    async def forge(self, ctx):
+        embed = discord.Embed(title="🔥 The Grandmaster's Forge", description="Welcome to the Alchemy Forge.\n\nUse the control panel below to view the current **Weekly Blueprint**, check your required **Materials**, **Forge** a secret artifact, or **Awaken** your duplicates.", color=discord.Color.orange())
+        embed.set_image(url="https://media.giphy.com/media/l41YkxvU8c7J7Bba0/giphy.gif")
+        await ctx.send(embed=embed, view=ForgeHubView())
 
 
 async def setup(bot):
