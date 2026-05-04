@@ -1,13 +1,11 @@
-
 import discord
 from discord.ext import commands
 import random
 import asyncio
-from core import db, save_db, PaginationView, get_gif
+from core import db, save_db, PaginationView, get_gif, ask_groq
 
 # ========================================================================
-# MONSTER GACHA SYSTEM (OwO Bot Style)
-# Description: Defines the rarities, drop rates, and sell values of monsters.
+# MONSTER GACHA SYSTEM
 # ========================================================================
 MONSTERS = {
     "Common": {"chance": 60, "value": 1500, "mobs": ["🟢 Slime", "🦇 Cave Bat", "🐀 Plague Rat"]},
@@ -22,10 +20,9 @@ class RPG(commands.Cog):
         self.bot = bot
 
     # ========================================================================
-    # COMMAND: /hunt (OwO Style)
-    # Description: Catch monsters with weighted RNG. 
+    # COMMAND: /hunt (NOW AI POWERED!)
     # ========================================================================
-    @commands.hybrid_command(name="hunt", description="Hunt for monsters in the wild. Rare monsters sell for millions!")
+    @commands.hybrid_command(name="hunt", description="Hunt for monsters. The AI will narrate your battle!")
     @commands.cooldown(1, 45, commands.BucketType.user)
     async def hunt(self, ctx): 
         await ctx.defer()
@@ -42,11 +39,17 @@ class RPG(commands.Cog):
         db["zoo"][uid][caught_mob] = db["zoo"][uid].get(caught_mob, 0) + 1
         save_db(db)
 
-        # Set Colors based on rarity
+        # 🔥 AI NARRATION INJECTION 🔥
+        prompt = f"I am hunting in an RPG. I just encountered and captured a {caught_rarity} rarity monster called '{caught_mob}'. Write a 2-sentence epic or funny description of how I caught it."
+        try:
+            narrative = await ask_groq([{"role": "user", "content": prompt}])
+        except:
+            narrative = f"You ventured into the wild and caught a {caught_mob}!" # Fallback if AI is sleeping
+
         colors = {"Common": discord.Color.light_grey(), "Uncommon": discord.Color.green(), "Rare": discord.Color.blue(), "Epic": discord.Color.purple(), "Legendary": discord.Color.gold()}
         
         embed = discord.Embed(title="🏹 The Hunt!", color=colors[caught_rarity])
-        embed.description = f"You ventured into the wild and caught a **{caught_mob}**!\n\n**Rarity:** {caught_rarity}\n**Value:** {MONSTERS[caught_rarity]['value']:,} 🪙"
+        embed.description = f"{narrative}\n\n**Rarity:** {caught_rarity}\n**Value:** {MONSTERS[caught_rarity]['value']:,} 🪙"
         
         if caught_rarity == "Legendary":
             embed.description += "\n\n🌟 **ABSOLUTE LEGENDARY PULL!** 🌟"
@@ -56,7 +59,6 @@ class RPG(commands.Cog):
 
     # ========================================================================
     # COMMAND: /zoo
-    # Description: View all the monsters you've hunted and collected.
     # ========================================================================
     @commands.hybrid_command(name="zoo", description="View your collection of hunted monsters.")
     async def zoo(self, ctx, member: discord.Member = None):
@@ -68,23 +70,15 @@ class RPG(commands.Cog):
         if not zoo_inv:
             return await ctx.send(embed=discord.Embed(description=f"🐾 {target.name}'s Zoo is completely empty. Go `/hunt`!", color=discord.Color.red()))
             
-        # Format the zoo list
-        lines = []
-        for mob, count in zoo_inv.items():
-            lines.append(f"**{mob}** x{count}")
-            
+        lines = [f"**{mob}** x{count}" for mob, count in zoo_inv.items()]
         chunks = [lines[i:i + 10] for i in range(0, len(lines), 10)]
-        embeds = []
-        for i, chunk in enumerate(chunks):
-            e = discord.Embed(title=f"🐾 {target.name}'s Bestiary ({i+1}/{len(chunks)})", description="\n".join(chunk), color=discord.Color.dark_green())
-            embeds.append(e)
+        embeds = [discord.Embed(title=f"🐾 {target.name}'s Bestiary ({i+1}/{len(chunks)})", description="\n".join(chunk), color=discord.Color.dark_green()) for i, chunk in enumerate(chunks)]
             
         await ctx.send(embed=embeds[0], view=PaginationView(ctx, embeds))
 
 
     # ========================================================================
-    # COMMAND: /sell_monster
-    # Description: Sell caught monsters for coins.
+    # COMMAND: /sell_monster (NOW AI POWERED!)
     # ========================================================================
     @commands.hybrid_command(name="sell_monster", description="Sell a monster from your zoo for coins.")
     async def sell_monster(self, ctx, exact_name: str, amount: int = 1):
@@ -92,40 +86,37 @@ class RPG(commands.Cog):
         uid = str(ctx.author.id)
         zoo_inv = db.setdefault("zoo", {}).get(uid, {})
         
-        # Search for the monster
         found_mob = next((m for m in zoo_inv if exact_name.lower() in m.lower()), None)
         
         if not found_mob or zoo_inv[found_mob] < amount:
             return await ctx.send(embed=discord.Embed(description=f"❌ You don't have {amount}x of that monster.", color=discord.Color.red()))
             
-        # Find its value
-        mob_value = 0
-        for rarity, data in MONSTERS.items():
-            if found_mob in data["mobs"]:
-                mob_value = data["value"]
-                break
-                
+        mob_value = next((data["value"] for r, data in MONSTERS.items() if found_mob in data["mobs"]), 0)
         total_payout = mob_value * amount
         
-        # Deduct mob, add coins
         zoo_inv[found_mob] -= amount
-        if zoo_inv[found_mob] <= 0:
-            del zoo_inv[found_mob]
+        if zoo_inv[found_mob] <= 0: del zoo_inv[found_mob]
             
         db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + total_payout
         save_db(db)
         
-        await ctx.send(embed=discord.Embed(description=f"🤝 Sold **{amount}x {found_mob}** for **{total_payout:,} 🪙**!", color=discord.Color.green()))
+        # 🔥 AI MERCHANT REACTION 🔥
+        prompt = f"I am a player selling {amount}x '{found_mob}' to you for {total_payout} coins. React to this transaction as a greedy, sarcastic RPG merchant."
+        try:
+            reaction = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
+        except:
+            reaction = "Pleasure doing business with you."
+
+        embed = discord.Embed(description=f"🤝 Sold **{amount}x {found_mob}** for **{total_payout:,} 🪙**!\n\n🗣️ **Merchant:** *\"{reaction}\"*", color=discord.Color.green())
+        await ctx.send(embed=embed)
 
 
     # ========================================================================
-    # LOOTBOX SYSTEM
-    # Description: Buy and open lootboxes for massive randomized rewards.
+    # LOOTBOX SYSTEM (NOW AI POWERED!)
     # ========================================================================
     @commands.hybrid_group(name="lootbox", description="Buy and open mysterious lootboxes.")
     async def lootbox(self, ctx):
-        if ctx.invoked_subcommand is None:
-            await ctx.send("Use `/lootbox buy` or `/lootbox open`.")
+        if ctx.invoked_subcommand is None: await ctx.send("Use `/lootbox buy` or `/lootbox open`.")
 
     @lootbox.command(name="buy", description="Buy a Mystic Lootbox for 100,000 coins.")
     async def lootbox_buy(self, ctx, amount: int = 1):
@@ -134,49 +125,47 @@ class RPG(commands.Cog):
         cost = 100000 * amount
         
         if db.setdefault("economy", {}).get(uid, 0) < cost:
-            return await ctx.send(embed=discord.Embed(description=f"❌ You need **{cost:,} coins** to buy {amount} Lootbox(es).", color=discord.Color.red()))
+            return await ctx.send(embed=discord.Embed(description=f"❌ You need **{cost:,} coins**.", color=discord.Color.red()))
             
         db["economy"][uid] -= cost
         db.setdefault("lootboxes", {})[uid] = db.get("lootboxes", {}).get(uid, 0) + amount
         save_db(db)
-        
-        await ctx.send(embed=discord.Embed(description=f"🎁 Successfully bought **{amount}x Mystic Lootbox(es)**! Use `/lootbox open` to unbox it.", color=discord.Color.green()))
+        await ctx.send(embed=discord.Embed(description=f"🎁 Successfully bought **{amount}x Mystic Lootbox(es)**! Use `/lootbox open`.", color=discord.Color.green()))
 
-    @lootbox.command(name="open", description="Open a Mystic Lootbox.")
+    @lootbox.command(name="open", description="Open a Mystic Lootbox. AI will react to your loot!")
     async def lootbox_open(self, ctx):
         await ctx.defer()
         uid = str(ctx.author.id)
         
         if db.setdefault("lootboxes", {}).get(uid, 0) <= 0:
-            return await ctx.send(embed=discord.Embed(description="❌ You don't have any Lootboxes! Buy one with `/lootbox buy`.", color=discord.Color.red()))
+            return await ctx.send(embed=discord.Embed(description="❌ You don't have any Lootboxes!", color=discord.Color.red()))
             
-        # Deduct box
         db["lootboxes"][uid] -= 1
         
-        # Fake suspense animation
         msg = await ctx.send(embed=discord.Embed(title="🎁 Opening Lootbox...", description="*Unlocking the magical seals...*", color=discord.Color.dark_grey()))
         await asyncio.sleep(1.5)
-        await msg.edit(embed=discord.Embed(title="🎁 Opening Lootbox...", description="*The box is glowing intensely!*", color=discord.Color.gold()))
-        await asyncio.sleep(1.5)
         
-        # Generate Rewards (Coins + XP + Random Monster)
         coins = random.randint(10000, 250000)
         xp = random.randint(100, 500)
         
-        # Roll a monster (Slightly better odds than normal hunting)
         rarities = list(MONSTERS.keys())
         weights = [40, 30, 20, 8, 2] # Lootboxes have better legendary rates!
         caught_rarity = random.choices(rarities, weights=weights, k=1)[0]
         caught_mob = random.choice(MONSTERS[caught_rarity]["mobs"])
         
-        # Apply rewards
         db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + coins
         db.setdefault("levels", {}).setdefault(uid, {"xp": 0, "level": 1})["xp"] += xp
         db.setdefault("zoo", {}).setdefault(uid, {})[caught_mob] = db["zoo"][uid].get(caught_mob, 0) + 1
         save_db(db)
         
-        # Final Reveal
-        embed = discord.Embed(title="✨ LOOTBOX OPENED! ✨", color=discord.Color.purple())
+        # 🔥 AI UNBOXING REACTION 🔥
+        prompt = f"I just unboxed a lootbox and got {coins} coins, {xp} XP, and a {caught_rarity} rarity monster called '{caught_mob}'. Roast me or hype me up based on how good this loot is."
+        try:
+            reaction = await ask_groq([{"role": "user", "content": prompt}])
+        except:
+            reaction = "Enjoy the loot!"
+
+        embed = discord.Embed(title="✨ LOOTBOX OPENED! ✨", description=f"🤖 **Habibi AI:** *\"{reaction}\"*", color=discord.Color.purple())
         embed.add_field(name="💰 Coins", value=f"+{coins:,}", inline=True)
         embed.add_field(name="📈 XP", value=f"+{xp}", inline=True)
         embed.add_field(name=f"🐾 Monster ({caught_rarity})", value=caught_mob, inline=False)
