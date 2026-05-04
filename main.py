@@ -2,129 +2,162 @@ import discord
 from discord.ext import commands
 import os
 import traceback
+import asyncio
+from dotenv import load_dotenv
+from keep_alive import keep_alive
 
 # ========================================================================
-# ENVIRONMENT SETUP
+# ⚙️ CONFIGURATION & ENV LOADING
 # ========================================================================
-# Grab the token from environment variables (Required for Keep_alive / Hosting)
-# If you are running locally without env variables, you can paste it here, 
-# but NEVER share this file if your token is hardcoded!
-TOKEN = os.environ.get('DISCORD_TOKEN') 
+load_dotenv()
+TOKEN = os.getenv('DISCORD_TOKEN')
 
-# Setup intents (This allows the bot to read message content and see member lists)
+# Define bot intents (Essential for reading messages and managing members)
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.presences = True
 
-# Initialize the Bot Engine
-bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+class HabibiBot(commands.Bot):
+    def __init__(self):
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None,
+            case_insensitive=True
+        )
+
+    # ========================================================================
+    # 📦 MODULAR COG LOADER
+    # ========================================================================
+    async def setup_hook(self):
+        """This runs before the bot starts connecting to Discord."""
+        print("🚀 [BOOT] Starting Cog Loader...")
+        
+        # Ensure the cogs directory exists
+        if not os.path.exists('./cogs'):
+            os.makedirs('./cogs')
+            print("📁 [SYSTEM] Created missing 'cogs' directory.")
+
+        success = 0
+        failed = 0
+        
+        for filename in os.listdir('./cogs'):
+            if filename.endswith('.py'):
+                try:
+                    # Loading cogs dynamically
+                    await self.load_extension(f'cogs.{filename[:-3]}')
+                    print(f"  ✅ Loaded Module: {filename}")
+                    success += 1
+                except Exception as e:
+                    print(f"  ❌ Failed to load {filename}: {e}")
+                    traceback.print_exc()
+                    failed += 1
+        
+        print(f"🏁 [BOOT] Load Complete: {success} Success | {failed} Failed")
+        
+        # Syncing Slash Commands
+        print("🔄 [SYSTEM] Syncing Slash Commands globally...")
+        try:
+            synced = await self.tree.sync()
+            print(f"✅ [SYSTEM] Successfully synced {len(synced)} commands.")
+        except Exception as e:
+            print(f"⚠️ [SYSTEM] Slash Sync Error: {e}")
+
+    # ========================================================================
+    # 🟢 ON_READY EVENT
+    # ========================================================================
+    async def on_ready(self):
+        print("\n" + "="*50)
+        print(f"🟢 HABIBI BOT IS ONLINE")
+        print(f"Logged in as: {self.user.name} (ID: {self.user.id})")
+        print(f"Connected to {len(self.guilds)} servers")
+        print("="*50 + "\n")
+        
+        # Set Activity Status
+        activity = discord.Activity(
+            type=discord.ActivityType.watching, 
+            name="over the server | /masterlist"
+        )
+        await self.change_presence(status=discord.Status.online, activity=activity)
 
 # ========================================================================
-# BOOT SEQUENCE & SYNCING
+# 🛠️ GLOBAL ERROR HANDLER
 # ========================================================================
-@bot.event
-async def on_ready():
-    print("==================================================")
-    print(f"✅ SYSTEM ONLINE: Logged in successfully as {bot.user.name}")
-    print("==================================================")
-    
-    # Set the bot's rich presence status
-    await bot.change_presence(activity=discord.Activity(
-        type=discord.ActivityType.watching, 
-        name="over the server | /masterlist"
-    ))
-    
-    # Sync Slash Commands to Discord globally
-    try:
-        print("🔄 Syncing slash commands...")
-        synced = await bot.tree.sync()
-        print(f"✅ Synced {len(synced)} slash commands globally.")
-    except Exception as e:
-        print(f"⚠️ Failed to sync slash commands: {e}")
+bot = HabibiBot()
 
-
-# ========================================================================
-# GLOBAL ERROR HANDLER
-# Description: Intercepts all errors so the bot doesn't fail silently.
-# ========================================================================
 @bot.event
 async def on_command_error(ctx, error):
-    # Ignore commands that don't exist
+    """Intercepts and roasts users for making mistakes."""
+    
+    # Command doesn't exist? Ignore it.
     if isinstance(error, commands.CommandNotFound):
         return
 
-    # User forgot an argument (e.g. typing /pay without the amount)
+    # Missing arguments (e.g. forgot to mention someone)
     if isinstance(error, commands.MissingRequiredArgument):
-        embed = discord.Embed(description=f"❌ **Bro, you missed something!**\nYou are missing the `{error.param.name}` argument.", color=discord.Color.red())
-        return await ctx.send(embed=embed, ephemeral=True)
+        embed = discord.Embed(
+            description=f"❌ **Missing Info!** You forgot to provide the `{error.param.name}` argument.", 
+            color=discord.Color.red()
+        )
+        return await ctx.send(embed=embed, delete_after=10)
 
-    # User is on a cooldown
+    # Cooldown check
     if isinstance(error, commands.CommandOnCooldown):
-        minutes, seconds = divmod(error.retry_after, 60)
-        hours, minutes = divmod(minutes, 60)
+        m, s = divmod(error.retry_after, 60)
+        h, m = divmod(m, 60)
+        time_left = f"{int(h)}h {int(m)}m {int(s)}s" if h > 0 else f"{int(m)}m {int(s)}s" if m > 0 else f"{int(s)}s"
         
-        time_str = ""
-        if hours > 0: time_str += f"**{int(hours)}h** "
-        if minutes > 0: time_str += f"**{int(minutes)}m** "
-        time_str += f"**{int(seconds)}s**"
-        
-        embed = discord.Embed(description=f"⏳ **Chill bro!** This command is on cooldown. Try again in {time_str}.", color=discord.Color.orange())
-        return await ctx.send(embed=embed, ephemeral=True)
+        embed = discord.Embed(
+            description=f"⏳ **Too fast!** Chill for another **{time_left}**.", 
+            color=discord.Color.orange()
+        )
+        return await ctx.send(embed=embed, delete_after=5)
 
-    # User lacks permissions
+    # Permission check
     if isinstance(error, commands.MissingPermissions):
-        embed = discord.Embed(description="🛑 **Access Denied.** You do not have the required permissions to do this.", color=discord.Color.dark_red())
-        return await ctx.send(embed=embed, ephemeral=True)
+        embed = discord.Embed(
+            description="🛑 **Unauthorized.** You don't have the rank to do that.", 
+            color=discord.Color.dark_red()
+        )
+        return await ctx.send(embed=embed, delete_after=10)
 
-    # Developer ONLY commands
+    # Bot Owner check
     if isinstance(error, commands.NotOwner):
-        embed = discord.Embed(description="⛔ **Security Block:** Only the bot owner can use this command.", color=discord.Color.dark_red())
-        return await ctx.send(embed=embed, ephemeral=True)
+        embed = discord.Embed(
+            description="⛔ **Developer Access Only.** This command is restricted.", 
+            color=discord.Color.black()
+        )
+        return await ctx.send(embed=embed, delete_after=10)
 
-    # If it's something else, print it to the console so you can debug it
-    print(f"⚠️ [Error in {ctx.command}]: {error}")
+    # Print any other errors to the console for you to fix
+    print(f"⚠️ [Runtime Error]: {error}")
     traceback.print_exception(type(error), error, error.__traceback__)
 
-
 # ========================================================================
-# THE COG LOADER
-# Description: Scans the 'cogs' folder and loads every Python file.
+# 🔥 ENGINE IGNITION
 # ========================================================================
-async def load_all_cogs():
-    print("⏳ Loading modular cogs...")
-    success_count = 0
-    fail_count = 0
-    
-    for filename in os.listdir('./cogs'):
-        if filename.endswith('.py'):
-            try:
-                await bot.load_extension(f'cogs.{filename[:-3]}')
-                print(f"  📦 Loaded: {filename}")
-                success_count += 1
-            except Exception as e:
-                print(f"  ❌ Failed to load {filename}: {e}")
-                fail_count += 1
-                
-    print(f"🏁 Modules Loaded: {success_count} Success, {fail_count} Failed.")
-
-
-# ========================================================================
-# ASYNC MAIN RUNNER
-# ========================================================================
-async def main():
+async def start_engine():
     async with bot:
-        # Load all the cogs before starting the bot
-        await load_all_cogs()
-        
+        # Check for token
         if not TOKEN:
-            print("\n❌ CRITICAL ERROR: DISCORD_TOKEN is missing!")
-            print("Please set your bot token in the environment variables.")
+            print("❌ CRITICAL ERROR: DISCORD_TOKEN not found in .env file!")
             return
             
-        # Start the bot connection
+        # Start the Keep Alive web server for 24/7 hosting
+        try:
+            keep_alive()
+            print("🌐 [SYSTEM] Keep-Alive Web Server started on Port 8080")
+        except Exception as e:
+            print(f"⚠️ [SYSTEM] Keep-Alive failed: {e}")
+
+        # Ignite Bot
         await bot.start(TOKEN)
 
-# Trigger the event loop
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    try:
+        asyncio.run(start_engine())
+    except KeyboardInterrupt:
+        print("🛑 [SYSTEM] Bot shutting down manually...")
+    except Exception as e:
+        print(f"❌ [CRITICAL SHUTDOWN]: {e}")
