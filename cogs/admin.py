@@ -3,7 +3,7 @@ from discord.ext import commands
 import json
 import asyncio
 from core import db, save_db, gif_db, save_gifs, ai_client, ask_groq
-from ui import ConfirmView, PaginationView, AIBossFightView
+from ui import ConfirmView, PaginationView
 
 # ==========================================
 # INTERACTIVE GIF GALLERY UI
@@ -73,7 +73,6 @@ class AITemplateView(discord.ui.View):
             
         for child in self.children: child.disabled = True
         
-        # Initial Status Update
         if interaction:
             await interaction.response.edit_message(embed=discord.Embed(description="⚙️ **Initializing Construction Protocol...**", color=discord.Color.orange()), view=self)
             work_msg = interaction.message
@@ -86,7 +85,6 @@ class AITemplateView(discord.ui.View):
         if nuke:
             await work_msg.edit(embed=discord.Embed(description="☢️ **Phase 1:** Eradicating old channels and roles...", color=discord.Color.red()), view=self)
             for c in g.channels:
-                # 🔥 THE FIX: Do not delete the channel we are currently typing the progress in!
                 if c.id == work_msg.channel.id: continue 
                 try: await c.delete(); await asyncio.sleep(0.4)
                 except: pass
@@ -95,13 +93,11 @@ class AITemplateView(discord.ui.View):
                     try: await r.delete(); await asyncio.sleep(0.4)
                     except: pass
 
-        # 1. Build Roles
         await work_msg.edit(embed=discord.Embed(description="🛡️ **Phase 2:** Forging server roles...", color=discord.Color.blue()), view=self)
         for r_data in self.template.get("roles", []):
             try: await g.create_role(name=r_data["name"], color=discord.Color(r_data["color"]), hoist=r_data["hoist"]); await asyncio.sleep(0.4)
             except: pass
 
-        # 2. Build Categories & Channels
         await work_msg.edit(embed=discord.Embed(description="🏗️ **Phase 3:** Constructing categories and channels...", color=discord.Color.gold()), view=self)
         for cat_data in self.template.get("categories", []):
             try: 
@@ -115,12 +111,10 @@ class AITemplateView(discord.ui.View):
                     await asyncio.sleep(0.4)
             except: pass
 
-        # 3. Post Rules (If AI generated them)
         if self.template.get("has_rules") and self.template.get("rules_text"):
             await work_msg.edit(embed=discord.Embed(description="📜 **Phase 4:** Drafting and posting server rules...", color=discord.Color.teal()), view=self)
             rules_channel = next((c for c in g.text_channels if "rule" in c.name.lower()), None)
             
-            # If no rules channel found, pick the first one that isn't the active work channel
             if not rules_channel and g.text_channels:
                 rules_channel = next((c for c in g.text_channels if c.id != work_msg.channel.id), None)
                 if not rules_channel: rules_channel = g.text_channels[0]
@@ -131,7 +125,6 @@ class AITemplateView(discord.ui.View):
                 try: await rules_channel.send(embed=rules_embed)
                 except: pass
 
-        # Find a clean channel to send the final success ping
         for c in g.text_channels:
             if c.id != work_msg.channel.id:
                 try: 
@@ -315,7 +308,7 @@ class Admin(commands.Cog):
         await msg.edit(embed=discord.Embed(description="⚙️ Wiping channels & roles...", color=discord.Color.orange()), view=None)
         g = ctx.guild
         for c in g.channels:
-            if c.id == msg.channel.id: continue # 🔥 Fixed here too!
+            if c.id == msg.channel.id: continue 
             try: await c.delete(); await asyncio.sleep(0.4)
             except: pass
         for r in g.roles:
@@ -393,16 +386,65 @@ class Admin(commands.Cog):
                     except Exception as err: await msg.edit(embed=discord.Embed(description=f"⚠️ **Failed:**\n```py\n{err}\n```", color=discord.Color.red()))
         except Exception as e: await ctx.send(embed=discord.Embed(description=f"❌ **Error:** {e}", color=discord.Color.red()))
 
-    @commands.hybrid_command(name="masterlist", description="View all 100+ bot commands in one massive list.")
+
+    # ==========================================
+    # AUTO-UPDATING DYNAMIC MASTERLIST
+    # ==========================================
+    @commands.hybrid_command(name="masterlist", description="Dynamically view all loaded commands across the entire bot engine.")
     async def masterlist(self, ctx):
         await ctx.defer()
-        embed = discord.Embed(title="📜 The Ultimate Masterlist", description="Every single command baked into the HabibiBot engine.", color=discord.Color.gold())
-        embed.add_field(name="🤖 Setup & Admin", value="`/ai_template`, `/template_save`, `/template_deploy`, `/template_list`, `/deployserver`, `/setaichannel`, `/setcmdchannel`, `/seteventchannel`\n`/gif_add`, `/gif_remove`, `/gif_list`", inline=False)
-        embed.add_field(name="🛡️ Moderation", value="**Punishments:** `/kick`, `/ban`, `/tempban`, `/timeout`, `/jail`, `/unjail`\n**Warnings:** `/warn`, `/warnings`, `/clearwarns`\n**Security:** `/lockdown`, `/unlockdown`, `/purge`, `/nuke`, `/slowmode`\n**Logs:** `/snipe`, `/editsnipe`", inline=False)
-        embed.add_field(name="💰 Economy & Hustle", value="**Money:** `/bal`, `/rich`, `/daily`, `/weekly`\n**Hustle:** `/work`, `/crime`, `/rob`, `/heist`\n**Items:** `/shop`, `/inventory`, `/trade`, `/craft`", inline=False)
-        embed.add_field(name="⚔️ RPG, AI & Games", value="**AI Tools:** `/aicommand`, `/bossfight`, `/vibecheck`, `/roast_history`, `/tldr`, `/lore`, `/debate`, `/define`, `/urban`, `/gothic_translate`\n**Casino:** `/slots`, `/blackjack`, `/coinflip`\n**RPG & Levels:** `/hunt`, `/zoo`, `/sell_monster`, `/fuse_monster`, `/lootbox`, `/rank`, `/leaderboard_levels`, `/givexp`, `/quest`", inline=False)
-        embed.add_field(name="⚙️ Utilities", value="**Profiles:** `/profile`, `/userhistory`, `/roleinfo`, `/servericon`, `/avatar`, `/serverinfo`, `/ping`\n**Misc:** `/giveaway_start`, `/giveaway_roll`, `/remindme`, `/calc`, `/poll`", inline=False)
-        embed.add_field(name="🤡 Prefix Trolls & Anime (Use !)", value="**Trolls:** `!fakeban`, `!rickroll`, `!roast`, `!compliment`, `!confess`, `!kill`, `!revive`, `!dadjoke`, `!choose`, `!spank`, `!jailbreak`, `!eightball`, `!hack`, `!ship`\n**Raters:** `!howgay`, `!simpmeter`, `!susmeter`\n**Anime Actions:** `!pat`, `!punch`, `!bite`, `!kiss`, `!smug`, `!cry`, `!quote`, `!powerlevel`, `!domain_expansion`, `!bankai`", inline=False)
+        
+        embed = discord.Embed(
+            title="📜 The Ultimate Masterlist", 
+            description="Every single command currently active in the HabibiBot Engine. This list auto-updates in real-time as modules are loaded.", 
+            color=discord.Color.gold()
+        )
+        
+        # Dictionary to map your Cog names to pretty titles with emojis
+        cog_formatting = {
+            "Admin": "🤖 Setup & Admin",
+            "Moderation": "🛡️ Moderation & Security",
+            "Economy": "💰 Economy & The Forge",
+            "RPG": "⚔️ RPG & Monster Hunting",
+            "Trolls": "🤡 Trolls & Chaos",
+            "FunActions": "🎭 Anime & Roleplay",
+            "Utils": "⚙️ Tools & Utilities",
+            "Casino": "🎲 Casino & Gambling",
+            "AIChat": "🧠 AI Chat & Tools"
+        }
+
+        # Dynamically loop through every single loaded cog in the bot
+        for cog_name, cog in self.bot.cogs.items():
+            cmds = cog.get_commands()
+            
+            # Skip empty modules
+            if not cmds: continue
+            
+            command_list = []
+            for c in cmds:
+                # If it's a Hybrid Command (slash command enabled), mark it with /
+                # If it's a regular old-school text command, mark it with ! (or your prefix)
+                if isinstance(c, commands.HybridCommand) or isinstance(c, commands.HybridGroup):
+                    command_list.append(f"`/{c.name}`")
+                else:
+                    command_list.append(f"`!{c.name}`")
+            
+            # Format the title based on the dictionary, or default to a puzzle piece
+            field_title = cog_formatting.get(cog_name, f"🧩 {cog_name} Module")
+            
+            # Join commands with commas. Truncate if it somehow passes Discord's 1024 char limit.
+            field_value = ", ".join(command_list)
+            if len(field_value) > 1024:
+                field_value = field_value[:1020] + "..."
+                
+            embed.add_field(name=field_title, value=field_value, inline=False)
+            
+        # Catch any stray commands not inside a specific Cog
+        uncategorized = [c for c in self.bot.commands if c.cog is None and c.name != "help"]
+        if uncategorized:
+            stray_cmds = [f"`/{c.name}`" if isinstance(c, commands.HybridCommand) else f"`!{c.name}`" for c in uncategorized]
+            embed.add_field(name="🌐 Uncategorized", value=", ".join(stray_cmds), inline=False)
+
         await ctx.send(embed=embed)
 
 async def setup(bot):
