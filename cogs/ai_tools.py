@@ -109,38 +109,9 @@ class AITools(commands.Cog):
             await ctx.send("❌ Failed to roast.")
 
     # ========================================================================
-    # CREATIVE AI UTILITIES (Upgraded Database Connections)
+    # CREATIVE AI UTILITIES (Lore Removed for conflict resolution)
     # ========================================================================
-    @commands.hybrid_command(name="lore", description="AI generates an epic RPG backstory based on your real server stats.")
-    async def lore(self, ctx, member: discord.Member = None):
-        await ctx.defer()
-        if not ai_client: return await ctx.send("🤖 **AI Core Offline.**")
-        
-        target = member or ctx.author
-        uid = str(target.id)
-        
-        # Pull real server stats to feed the AI
-        bal = db.get("economy", {}).get(uid, 0)
-        level_data = db.get("levels", {}).get(uid, {"level": 1})
-        top_role = target.top_role.name if target.top_role.name != "@everyone" else "Wanderer"
-
-        prompt = f"""You are the Grand Historian. Write an epic, Dark Fantasy/Anime lore backstory for the character '{target.name}'.
-        You MUST incorporate these true facts about them into the story organically:
-        - Current Wealth: {bal} coins
-        - Power Level: {level_data['level']}
-        - Faction/Title: {top_role}
-        
-        Make them sound legendary, dangerous, or mysterious. Write exactly 2 epic paragraphs. Do not mention that these are Discord stats."""
-
-        try:
-            res = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
-            embed = discord.Embed(title=f"📖 The Legend of {target.name}", description=res, color=discord.Color.dark_theme())
-            embed.set_thumbnail(url=str(target.display_avatar.url))
-            await ctx.send(embed=embed)
-        except Exception as e:
-            print(f"Lore Error: {e}")
-            await ctx.send("❌ The scribes lost your lore pages.")
-
+    
     @commands.hybrid_command(name="debate", description="Challenge the AI to a debate. It will violently take the opposite side.")
     async def debate(self, ctx, *, topic: str):
         await ctx.defer()
