@@ -109,28 +109,9 @@ class AITools(commands.Cog):
             await ctx.send("❌ Failed to roast.")
 
     # ========================================================================
-    # CREATIVE AI UTILITIES (Lore Removed for conflict resolution)
+    # CREATIVE AI UTILITIES (Lore & Debate Removed for conflict resolution)
     # ========================================================================
     
-    @commands.hybrid_command(name="debate", description="Challenge the AI to a debate. It will violently take the opposite side.")
-    async def debate(self, ctx, *, topic: str):
-        await ctx.defer()
-        if not ai_client: return await ctx.send("🤖 **AI Core Offline.**")
-
-        prompt = f"""A user just claimed: "{topic}". 
-        You must violently, sarcastically, and intelligently argue the EXACT OPPOSITE of what they said. 
-        Tear their argument apart using logic (or fake, funny internet logic). 
-        Keep it to one paragraph. Do not be overly polite."""
-
-        try:
-            res = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
-            embed = discord.Embed(title="🥊 Debate Mode", color=discord.Color.red())
-            embed.add_field(name=f"{ctx.author.name} says:", value=f"*{topic}*", inline=False)
-            embed.add_field(name="AI responds:", value=res, inline=False)
-            await ctx.send(embed=embed)
-        except:
-            await ctx.send("❌ The AI refuses to stoop to your level of debate.")
-
     @commands.hybrid_command(name="urban", description="AI generates a perfectly formatted Urban Dictionary definition.")
     async def urban(self, ctx, *, word: str):
         await ctx.defer()
