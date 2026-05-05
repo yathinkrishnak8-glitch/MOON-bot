@@ -626,4 +626,140 @@ class RPG(commands.Cog):
         for _ in range(amount):
             # Roll Coins & XP
             total_coins += random.randint(*config["coin_range"])
-            total_
+            total_xp += random.randint(*config["xp_range"])
+            
+            # Roll Mob
+            rarity = random.choices(config["rarities"], weights=config["weights"], k=1)[0]
+            mob = f"{random.choice(MONSTERS[rarity]['mobs'])} [Boxed]"
+            mobs_caught[mob] = mobs_caught.get(mob, 0) + 1
+            user_zoo[mob] = user_zoo.get(mob, 0) + 1
+
+        db.setdefault("economy", {})[uid] += total_coins
+        db.setdefault("levels", {}).setdefault(uid, {"xp": 0, "level": 1})["xp"] += total_xp
+        save_db(db)
+        
+        mob_summary = "\n".join([f"🐾 **{m}** x{c}" for m, c in mobs_caught.items()])
+        
+        embed = discord.Embed(title="✨ LOOTBOXES OPENED! ✨", color=discord.Color.purple())
+        embed.add_field(name="💰 Total Coins", value=f"+{total_coins:,}", inline=True)
+        embed.add_field(name="📈 Total XP", value=f"+{total_xp:,}", inline=True)
+        embed.add_field(name="🐉 Monsters Found", value=mob_summary, inline=False)
+        
+        await msg.edit(embed=embed)
+
+    @lootbox.command(name="inventory", aliases=["inv"], description="Check how many lootboxes you own.")
+    async def lootbox_inventory(self, ctx):
+        await ctx.defer()
+        uid = str(ctx.author.id)
+        
+        user_boxes = db.setdefault("lootboxes", {}).setdefault(uid, {})
+        if isinstance(user_boxes, int): 
+            db["lootboxes"][uid] = {"mystic": user_boxes}
+            user_boxes = db["lootboxes"][uid]
+            
+        if not any(user_boxes.values()):
+            return await ctx.send(embed=discord.Embed(description="📦 You have absolutely zero lootboxes. Go buy some!", color=discord.Color.red()))
+            
+        desc = ""
+        for b_type, count in user_boxes.items():
+            if count > 0:
+                name = LOOTBOXES.get(b_type, {"name": b_type})["name"]
+                desc += f"{name}: **{count}**\n"
+                
+        await ctx.send(embed=discord.Embed(title="📦 Your Lootbox Stash", description=desc, color=discord.Color.blue()))
+
+
+    # ========================================================================
+    # LEVELING & QUESTS (With Pet Multipliers)
+    # ========================================================================
+    @commands.hybrid_command(name="quest", description="Go on an epic quest to earn XP and level up.")
+    @commands.cooldown(1, 3600, commands.BucketType.user)
+    async def quest(self, ctx):
+        await ctx.defer()
+        uid = str(ctx.author.id)
+        level_data = db.setdefault("levels", {}).setdefault(uid, {"xp": 0, "level": 1})
+        
+        if level_data["level"] >= 13000:
+            return await ctx.send(embed=discord.Embed(description="🛑 **Max Level 13,000 Reached!** You are already at the pinnacle.", color=discord.Color.red()))
+        
+        # XP Multiplier Logic via Equipped Pet
+        pet = db.get("equipped_pet", {}).get(uid)
+        multiplier = 1.0
+        pet_text = ""
+        
+        if pet:
+            mult = PET_MULTIPLIERS.get(pet["rarity"], 1.0)
+            multiplier = mult
+            pet_text = f"\n\n🐾 **{pet['name']}** helped you find {int((mult-1)*100)}% more XP!"
+        
+        base_xp = random.randint(300, 800)
+        xp_gained = int(base_xp * multiplier)
+        level_data["xp"] += xp_gained
+        
+        req_xp = int(150 * (level_data['level'] ** 1.5))
+        leveled_up = False
+        
+        while level_data["xp"] >= req_xp:
+            level_data["xp"] -= req_xp
+            level_data["level"] += 1
+            leveled_up = True
+            req_xp = int(150 * (level_data['level'] ** 1.5))
+            
+        save_db(db)
+        
+        desc = f"🗡️ **Dungeon run complete!** You braved the depths and earned **{xp_gained:,} XP**!{pet_text}"
+        if leveled_up:
+            desc += f"\n\n🎉 **LEVEL UP!** You grew stronger and are now Level **{level_data['level']}**!"
+            
+        await ctx.send(embed=discord.Embed(description=desc, color=discord.Color.orange()))
+
+    @commands.hybrid_command(name="rank", description="Check your current RPG Level and XP.")
+    async def rank(self, ctx, m: discord.Member = None): 
+        await ctx.defer()
+        target = m or ctx.author
+        
+        level_data = db.setdefault("levels", {}).setdefault(str(target.id), {"xp": 0, "level": 1})
+        req = int(150 * (level_data['level'] ** 1.5))
+        
+        embed = discord.Embed(title=f"Rank: {target.name}", description=f"⭐ Level: **{level_data['level']}**\n✨ XP: **{level_data['xp']:,} / {req:,}**", color=0x3498db)
+        embed.set_thumbnail(url=str(target.display_avatar.url))
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="leaderboard_levels", aliases=["lbl"], description="View the top-ranked players by RPG Level.")
+    async def leaderboard_levels(self, ctx): 
+        await ctx.defer()
+        sorted_levels = sorted(db.get("levels", {}).items(), key=lambda x: (x[1].get("level", 1), x[1].get("xp", 0)), reverse=True)
+        
+        if not sorted_levels: 
+            return await ctx.send(embed=discord.Embed(description="No ranking data available yet.", color=discord.Color.red()))
+            
+        chunks = [sorted_levels[i:i + 10] for i in range(0, len(sorted_levels), 10)]
+        embeds = []
+        for i, chunk in enumerate(chunks):
+            embed = discord.Embed(title=f"🏆 RPG Level Leaderboard ({i+1}/{len(chunks)})", color=discord.Color.gold())
+            for j, (uid, data) in enumerate(chunk): 
+                embed.add_field(name=f"#{i*10 + j + 1}", value=f"<@{uid}> - Level **{data.get('level', 1)}** (XP: {data.get('xp', 0):,})", inline=False)
+            embeds.append(embed)
+            
+        await ctx.send(embed=embeds[0], view=PaginationView(ctx, embeds))
+
+    @commands.hybrid_command(name="givexp", description="Give XP to a user (Admin Only).")
+    @commands.has_permissions(administrator=True)
+    async def givexp(self, ctx, member: discord.Member, amount: int): 
+        await ctx.defer()
+        uid = str(member.id)
+        level_data = db.setdefault("levels", {}).setdefault(uid, {"xp": 0, "level": 1})
+        level_data["xp"] += amount
+        
+        req_xp = int(150 * (level_data['level'] ** 1.5))
+        while level_data["xp"] >= req_xp:
+            level_data["xp"] -= req_xp
+            level_data["level"] += 1
+            req_xp = int(150 * (level_data['level'] ** 1.5))
+            
+        save_db(db)
+        await ctx.send(embed=discord.Embed(description=f"📈 Granted **{amount:,} XP** to {member.mention}. They are now Level **{level_data['level']}**.", color=discord.Color.green()))
+
+
+async def setup(bot):
+    await bot.add_cog(RPG(bot))
