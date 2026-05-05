@@ -1,4 +1,3 @@
-
 import discord
 from discord.ext import commands, tasks
 import asyncio
@@ -57,7 +56,7 @@ class Utils(commands.Cog):
 
 
     # ========================================================================
-    # AI-POWERED UTILITIES (With Token Shields)
+    # AI-POWERED UTILITIES
     # ========================================================================
     @commands.hybrid_command(name="define", description="AI powered precise dictionary.")
     async def define(self, ctx, word: str): 
@@ -74,29 +73,6 @@ class Utils(commands.Cog):
         if not ai_client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
         reply = await ask_groq([{"role": "user", "content": f"Provide the internet slang 'Urban Dictionary' definition for: '{word}'. Keep it safe for work."}], inject_personality=False)
         await ctx.send(embed=discord.Embed(title=f"🏙️ Urban Slang: {word.title()}", description=reply, color=discord.Color.dark_green()))
-
-    @commands.hybrid_command(name="gothic_translate", description="Translate normal text into dark gothic fantasy lore.")
-    async def gothic_translate(self, ctx, *, text: str): 
-        await ctx.defer()
-        text = text[:1500] # 🔥 TOKEN SHIELD: Max 1500 chars
-        if not ai_client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
-        reply = await ask_groq([{"role": "user", "content": f"Rewrite this text into epic, dark gothic fantasy lore:\n{text}"}], inject_personality=False)
-        await ctx.send(embed=discord.Embed(title="🦇 Gothic Translation", description=reply, color=discord.Color.purple()))
-
-    @commands.hybrid_command(name="lore", description="Generate an epic AI backstory for the server.")
-    async def lore(self, ctx): 
-        await ctx.defer()
-        if not ai_client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
-        reply = await ask_groq([{"role": "user", "content": f"Generate an epic, 2-paragraph mythic backstory for a kingdom called '{ctx.guild.name}'."}], inject_personality=False)
-        await ctx.send(embed=discord.Embed(title=f"📖 The Lore of {ctx.guild.name}", description=reply, color=discord.Color.dark_theme()))
-
-    @commands.hybrid_command(name="debate", description="Start an argument with the AI.")
-    async def debate(self, ctx, *, topic: str): 
-        await ctx.defer()
-        topic = topic[:1500] # 🔥 TOKEN SHIELD
-        if not ai_client: return await ctx.send(embed=discord.Embed(description="❌ AI offline.", color=discord.Color.red()))
-        reply = await ask_groq([{"role": "system", "content": "You are a master debater. Aggressively but politely argue the exact opposite of whatever the user says."}, {"role": "user", "content": topic}], inject_personality=False)
-        await ctx.send(embed=discord.Embed(title=f"⚖️ Debating: {topic[:50]}...", description=reply, color=discord.Color.dark_grey()))
 
 
     # ========================================================================
@@ -199,7 +175,7 @@ class Utils(commands.Cog):
 
 
     # ========================================================================
-    # RANDOM UTILITIES (Safe Math & Reminders)
+    # RANDOM UTILITIES (Safe Math, Reminders, & Polls)
     # ========================================================================
     @commands.hybrid_command(name="remindme", description="Set a persistent timer to remind you about something.")
     async def remindme(self, ctx, minutes: int, *, message: str): 
@@ -231,6 +207,30 @@ class Utils(commands.Cog):
             await ctx.send(embed=discord.Embed(description="❌ You cannot divide by zero.", color=discord.Color.red()))
         except: 
             await ctx.send(embed=discord.Embed(description="❌ Invalid math format.", color=discord.Color.red()))
+
+    @commands.hybrid_command(name="poll", description="Create an interactive reaction poll.")
+    async def poll(self, ctx, question: str, option1: str, option2: str, option3: str = None, option4: str = None):
+        await ctx.defer()
+        
+        options = [option1, option2]
+        if option3: options.append(option3)
+        if option4: options.append(option4)
+        
+        emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"]
+        
+        desc = f"**{question}**\n\n"
+        for i, opt in enumerate(options):
+            desc += f"{emojis[i]} : {opt}\n\n"
+            
+        embed = discord.Embed(title="📊 Server Poll", description=desc, color=discord.Color.orange())
+        embed.set_footer(text=f"Poll started by {ctx.author.name}")
+        
+        msg = await ctx.send(embed=embed)
+        
+        # Add the reactions so users can click them easily
+        for i in range(len(options)):
+            try: await msg.add_reaction(emojis[i])
+            except: pass
 
 
 async def setup(bot):
