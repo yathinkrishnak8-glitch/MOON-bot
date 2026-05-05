@@ -8,7 +8,7 @@ from core import db, save_db, get_gif, ask_groq, ai_client
 from ui import PaginationView 
 
 # ========================================================================
-# MONSTER GACHA SYSTEM (Upgraded with Mythic & Secret)
+# MONSTER GACHA SYSTEM & MULTIPLIERS
 # ========================================================================
 MONSTERS = {
     "Common": {"chance": 50, "value": 1500, "mobs": ["🟢 Slime", "🦇 Cave Bat", "🐀 Plague Rat"]},
@@ -18,6 +18,16 @@ MONSTERS = {
     "Legendary": {"chance": 3.5, "value": 1000000, "mobs": ["🔥 Immortal Phoenix", "🐙 Abyssal Kraken", "⚡ Storm Behemoth"]},
     "Mythic": {"chance": 1.2, "value": 10000000, "mobs": ["🌌 Astral Devourer", "☠️ Lich King", "👁️ Eldritch Watcher"]},
     "Secret": {"chance": 0.3, "value": 50000000, "mobs": ["💠 The Creator", "♾️ Omega Entity", "👑 Soul Sovereign"]}
+}
+
+PET_MULTIPLIERS = {
+    "Common": 1.05,     # +5% XP
+    "Uncommon": 1.10,   # +10% XP
+    "Rare": 1.25,       # +25% XP
+    "Epic": 1.50,       # +50% XP
+    "Legendary": 2.0,   # +100% XP
+    "Mythic": 3.0,      # +200% XP
+    "Secret": 6.0       # +500% XP
 }
 
 # ========================================================================
@@ -69,11 +79,18 @@ class BlackMarketView(discord.ui.View):
         buyer = self.buyers[index]
         payout = buyer["offer"]
 
-        db["zoo"][self.uid][self.mob_name] -= self.amount
-        if db["zoo"][self.uid][self.mob_name] <= 0:
-            del db["zoo"][self.uid][self.mob_name]
+        user_zoo = db.setdefault("zoo", {}).setdefault(self.uid, {})
+        user_zoo[self.mob_name] -= self.amount
+        if user_zoo[self.mob_name] <= 0:
+            del user_zoo[self.mob_name]
             
         db.setdefault("economy", {})[self.uid] = db["economy"].get(self.uid, 0) + payout
+        
+        # If they sold their equipped pet, unequip it
+        equipped = db.get("equipped_pet", {}).get(self.uid)
+        if equipped and equipped["name"] == self.mob_name and self.mob_name not in user_zoo:
+            del db["equipped_pet"][self.uid]
+            
         save_db(db)
 
         for child in self.children: 
@@ -183,9 +200,12 @@ class ActiveTradeView(discord.ui.View):
                     db["inventory"][uid].remove(item)
                     db.setdefault("inventory", {}).setdefault(target_uid, []).append(item)
             for mob, amt in o["monsters"].items():
-                db["zoo"][uid][mob] -= amt
-                if db["zoo"][uid][mob] <= 0: del db["zoo"][uid][mob]
-                db.setdefault("zoo", {}).setdefault(target_uid, {})[mob] = db["zoo"][target_uid].get(mob, 0) + amt
+                user_zoo = db.setdefault("zoo", {}).setdefault(uid, {})
+                target_zoo = db.setdefault("zoo", {}).setdefault(target_uid, {})
+                
+                user_zoo[mob] -= amt
+                if user_zoo[mob] <= 0: del user_zoo[mob]
+                target_zoo[mob] = target_zoo.get(mob, 0) + amt
 
         save_db(db)
         for child in self.children: child.disabled = True
@@ -296,35 +316,47 @@ class RPG(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.hybrid_command(name="hunt", description="Hunt for monsters out in the wild.")
+    @commands.hybrid_command(name="hunt", description="Venture into the wild to capture rare monsters.")
     @commands.cooldown(1, 45, commands.BucketType.user)
     async def hunt(self, ctx): 
         await ctx.defer()
         uid = str(ctx.author.id)
         
+        # 🌟 Beautiful loading screen before the RNG calculates
+        msg = await ctx.send(embed=discord.Embed(description="🌲 **Venturing into the tall grass...**", color=discord.Color.dark_green()))
+        await asyncio.sleep(1.5)
+        
+        # ==========================================
+        # 1. MYTHIC ANOMALY (2% CHANCE)
+        # ==========================================
         if random.randint(1, 100) <= 2 and ai_client:
             prompt = """I just triggered a 1-of-1 ultra rare mythic boss spawn. Generate a unique Boss monster. 
             Output ONLY a raw, perfectly formatted JSON object exactly like this: 
             {"name": "String", "title": "String", "value": 15000000}"""
             
             try:
-                res = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
+                # 🔥 TIMEOUT SHIELD: If Groq lags, jump to fallback instantly
+                res = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=4.0)
                 start, end = res.find('{'), res.rfind('}')
                 if start == -1 or end == -1: raise Exception("JSON format hallucination.")
                 
                 boss_data = json.loads(res[start:end+1])
                 full_name = f"🌌 {boss_data['name']} [{boss_data['title']}] (Mythic 1-of-1)"
                 
-                db.setdefault("zoo", {}).setdefault(uid, {})
-                db["zoo"][uid][full_name] = db["zoo"][uid].get(full_name, 0) + 1
+                user_zoo = db.setdefault("zoo", {}).setdefault(uid, {})
+                user_zoo[full_name] = user_zoo.get(full_name, 0) + 1
                 save_db(db)
                 
                 embed = discord.Embed(title="🚨 MYTHIC ANOMALY 🚨", description=f"The fabric of reality tore open and you captured a 1-of-1 Mythic Boss!\n\n**Captured:** {full_name}\n**Value:** {boss_data['value']:,} 🪙", color=discord.Color.magenta())
                 embed.set_image(url="https://media.giphy.com/media/l41YkxvU8c7J7Bba0/giphy.gif")
-                return await ctx.send(embed=embed)
+                return await msg.edit(embed=embed)
             except Exception as e: 
-                print(f"⚠️ AI Mythic Generation Failed: {e}")
+                print(f"⚠️ AI Mythic Generation Failed/Timed Out: {e}")
+                # Failsafe drops it to the normal hunt securely below
 
+        # ==========================================
+        # 2. NORMAL HUNT (98% CHANCE OR FALLBACK)
+        # ==========================================
         rarities = list(MONSTERS.keys())
         weights = [MONSTERS[r]["chance"] for r in rarities]
         caught_rarity = random.choices(rarities, weights=weights, k=1)[0]
@@ -334,7 +366,8 @@ class RPG(commands.Cog):
         if ai_client:
             prompt2 = f"Generate a short title or nature for a {caught_mob} e.g. [The Brave]. Return ONLY the bracketed string. Nothing else."
             try:
-                res_nature = await ask_groq([{"role": "user", "content": prompt2}], inject_personality=False)
+                # 🔥 TIMEOUT SHIELD
+                res_nature = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt2}], inject_personality=False), timeout=4.0)
                 match = re.search(r'\[.*?\]', res_nature)
                 if match: nature = match.group(0)
                 else: nature = f"[{res_nature.strip()}]"
@@ -342,12 +375,13 @@ class RPG(commands.Cog):
 
         full_name = f"{caught_mob} {nature}"
         
-        db.setdefault("zoo", {}).setdefault(uid, {})[full_name] = db["zoo"][uid].get(full_name, 0) + 1
+        user_zoo = db.setdefault("zoo", {}).setdefault(uid, {})
+        user_zoo[full_name] = user_zoo.get(full_name, 0) + 1
         save_db(db)
 
         colors = {"Common": 0x95a5a6, "Uncommon": 0x2ecc71, "Rare": 0x3498db, "Epic": 0x9b59b6, "Legendary": 0xf1c40f, "Mythic": 0xe91e63, "Secret": 0x00d2d3}
         embed = discord.Embed(title="🏹 The Hunt!", description=f"You ventured into the wild and caught a **{full_name}**!\n\n**Rarity:** {caught_rarity}\n**Base Value:** {MONSTERS[caught_rarity]['value']:,} 🪙", color=colors.get(caught_rarity, 0x95a5a6))
-        await ctx.send(embed=embed)
+        await msg.edit(embed=embed)
 
 
     @commands.hybrid_command(name="zoo", description="View your captured monsters.")
@@ -366,54 +400,107 @@ class RPG(commands.Cog):
         await ctx.send(embed=embeds[0], view=PaginationView(ctx, embeds))
 
 
+    # ========================================================================
+    # THE ACTIVE PET SYSTEM
+    # ========================================================================
+    @commands.hybrid_command(name="equip", description="Equip a monster from your zoo as your active pet for XP boosts!")
+    async def equip(self, ctx, *, exact_name: str):
+        await ctx.defer()
+        uid = str(ctx.author.id)
+        zoo_inv = db.get("zoo", {}).get(uid, {})
+        
+        exact_match = next((m for m in zoo_inv if exact_name.lower() in m.lower()), None)
+        if not exact_match:
+            return await ctx.send(embed=discord.Embed(description=f"❌ You don't own a monster named `{exact_name}` in your zoo.", color=discord.Color.red()))
+            
+        # Determine Rarity for the multiplier
+        pet_rarity = "Common"
+        for r, data in MONSTERS.items():
+            if any(mob in exact_match for mob in data["mobs"]):
+                pet_rarity = r
+                break
+        if "Mythic" in exact_match: pet_rarity = "Mythic"
+        if "Secret" in exact_match or "Chimera" in exact_match: pet_rarity = "Secret"
+
+        db.setdefault("equipped_pet", {})[uid] = {"name": exact_match, "rarity": pet_rarity}
+        save_db(db)
+        
+        mult = int((PET_MULTIPLIERS.get(pet_rarity, 1.0) - 1.0) * 100)
+        embed = discord.Embed(title="🐾 Pet Equipped!", description=f"You equipped **{exact_match}** ({pet_rarity}) as your active companion!\n\n✨ **Passive Bonus:** +{mult}% XP from `/quest`", color=discord.Color.green())
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="pet", description="Check your currently equipped companion.")
+    async def pet(self, ctx, member: discord.Member = None):
+        await ctx.defer()
+        target = member or ctx.author
+        uid = str(target.id)
+        
+        pet = db.get("equipped_pet", {}).get(uid)
+        if not pet:
+            return await ctx.send(embed=discord.Embed(description=f"❌ {target.name} does not have a pet equipped. Use `/equip`.", color=discord.Color.dark_grey()))
+            
+        mult = int((PET_MULTIPLIERS.get(pet['rarity'], 1.0) - 1.0) * 100)
+        embed = discord.Embed(title=f"🐾 {target.name}'s Companion", description=f"**{pet['name']}**\n\n💎 **Rarity:** {pet['rarity']}\n✨ **Bonus:** +{mult}% Quest XP", color=discord.Color.gold())
+        await ctx.send(embed=embed)
+
+
     @commands.hybrid_command(name="fuse_monster", description="Fuse two monsters to create a powerful Chimera.")
     async def fuse_monster(self, ctx, mob1: str, mob2: str):
         await ctx.defer()
         uid = str(ctx.author.id)
-        zoo_inv = db.setdefault("zoo", {}).get(uid, {})
+        user_zoo = db.setdefault("zoo", {}).setdefault(uid, {})
         
-        exact_m1 = next((m for m in zoo_inv if mob1.lower() in m.lower()), None)
-        exact_m2 = next((m for m in zoo_inv if mob2.lower() in m.lower()), None)
+        exact_m1 = next((m for m in user_zoo if mob1.lower() in m.lower()), None)
+        exact_m2 = next((m for m in user_zoo if mob2.lower() in m.lower()), None)
         
-        if not exact_m1 or not exact_m2 or (exact_m1 == exact_m2 and zoo_inv[exact_m1] < 2):
+        if not exact_m1 or not exact_m2 or (exact_m1 == exact_m2 and user_zoo[exact_m1] < 2):
             return await ctx.send(embed=discord.Embed(description="❌ You don't own the required monsters for this fusion.", color=discord.Color.red()))
             
         prompt = f"""I am fusing '{exact_m1}' and '{exact_m2}'. Generate a horrific, overpowered hybrid Chimera monster. 
         Output ONLY a valid JSON object exactly like this: {{"name": "String", "desc": "String"}}"""
         
         try:
-            res = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
+            # 🔥 TIMEOUT SHIELD
+            res = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=5.0)
             start, end = res.find('{'), res.rfind('}')
             if start == -1 or end == -1: raise Exception("AI JSON format error.")
             
             chimera = json.loads(res[start:end+1])
             
-            zoo_inv[exact_m1] -= 1
-            zoo_inv[exact_m2] -= 1
-            if zoo_inv[exact_m1] <= 0: del zoo_inv[exact_m1]
-            if zoo_inv[exact_m2] <= 0: del zoo_inv[exact_m2]
+            user_zoo[exact_m1] -= 1
+            user_zoo[exact_m2] -= 1
+            if user_zoo[exact_m1] <= 0: del user_zoo[exact_m1]
+            if user_zoo[exact_m2] <= 0: del user_zoo[exact_m2]
             
             full_n = f"🧬 {chimera['name']} (Chimera)"
-            zoo_inv[full_n] = zoo_inv.get(full_n, 0) + 1
+            user_zoo[full_n] = user_zoo.get(full_n, 0) + 1
             save_db(db)
             
             embed = discord.Embed(title="🧬 MUTATION SUCCESSFUL", description=f"You successfully fused the monsters and created **{full_n}**!\n\n*{chimera['desc']}*", color=0x6c5ce7)
             await ctx.send(embed=embed)
         except Exception as e: 
-            await ctx.send(embed=discord.Embed(description="❌ The mutation chamber exploded due to an AI error. Your monsters are safe.", color=discord.Color.red()))
+            await ctx.send(embed=discord.Embed(description="❌ The mutation chamber exploded due to an AI error (or timed out). Your monsters are safe.", color=discord.Color.red()))
 
 
     @commands.hybrid_command(name="sell_monster", description="Sell a monster to shady buyers on the AI Black Market.")
     async def sell_monster(self, ctx, exact_name: str, amount: int = 1):
         await ctx.defer()
         uid = str(ctx.author.id)
-        zoo_inv = db.setdefault("zoo", {}).get(uid, {})
+        user_zoo = db.setdefault("zoo", {}).setdefault(uid, {})
         
-        found_mob = next((m for m in zoo_inv if exact_name.lower() in m.lower()), None)
-        if not found_mob or zoo_inv[found_mob] < amount: 
+        found_mob = next((m for m in user_zoo if exact_name.lower() in m.lower()), None)
+        if not found_mob or user_zoo[found_mob] < amount: 
             return await ctx.send(embed=discord.Embed(description=f"❌ You don't own {amount}x of that monster.", color=discord.Color.red()))
             
-        base = 10000000 if "Mythic" in found_mob else 1500
+        # 🔥 PERFECT VALUATION LOGIC FIX
+        base = 1500
+        for rarity, data in MONSTERS.items():
+            if any(mob in found_mob for mob in data["mobs"]):
+                base = data["value"]
+                break
+        if "Mythic" in found_mob: base = 10000000
+        if "Secret" in found_mob or "Chimera" in found_mob: base = 50000000
+        
         total_val = base * amount
         
         prompt = f"""I am selling '{amount}x {found_mob}' (Estimated Base: {total_val}). Generate 3 shady black market buyers. One lowballs, one is fair, one overpays. 
@@ -424,7 +511,8 @@ class RPG(commands.Cog):
         ]"""
         
         try:
-            res = await ask_groq([{"role": "user", "content": prompt}], inject_personality=False)
+            # 🔥 TIMEOUT SHIELD
+            res = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=6.0)
             start, end = res.find('['), res.rfind(']')
             if start == -1 or end == -1: raise Exception("AI JSON format error.")
             buyers = json.loads(res[start:end+1])
@@ -435,7 +523,7 @@ class RPG(commands.Cog):
                 
             await ctx.send(embed=embed, view=BlackMarketView(ctx, uid, found_mob, amount, buyers))
         except Exception as e: 
-            await ctx.send(embed=discord.Embed(description="❌ The black market was raided by the FBI. Try selling later.", color=discord.Color.red()))
+            await ctx.send(embed=discord.Embed(description="❌ The black market was raided by the FBI (AI timeout). Try selling later.", color=discord.Color.red()))
 
     @commands.hybrid_command(name="trade", description="Trade coins, items, and monsters with another player.")
     async def trade(self, ctx, member: discord.Member):
@@ -533,135 +621,9 @@ class RPG(commands.Cog):
         mobs_caught = {}
         
         config = LOOTBOXES[box_type]
+        user_zoo = db.setdefault("zoo", {}).setdefault(uid, {})
         
         for _ in range(amount):
             # Roll Coins & XP
             total_coins += random.randint(*config["coin_range"])
-            total_xp += random.randint(*config["xp_range"])
-            
-            # Roll Mob
-            rarity = random.choices(config["rarities"], weights=config["weights"], k=1)[0]
-            mob = f"{random.choice(MONSTERS[rarity]['mobs'])} [Boxed]"
-            mobs_caught[mob] = mobs_caught.get(mob, 0) + 1
-            
-            # Save mob
-            db.setdefault("zoo", {}).setdefault(uid, {})[mob] = db["zoo"][uid].get(mob, 0) + 1
-
-        db.setdefault("economy", {})[uid] += total_coins
-        db.setdefault("levels", {}).setdefault(uid, {"xp": 0, "level": 1})["xp"] += total_xp
-        save_db(db)
-        
-        mob_summary = "\n".join([f"🐾 **{m}** x{c}" for m, c in mobs_caught.items()])
-        
-        embed = discord.Embed(title="✨ LOOTBOXES OPENED! ✨", color=discord.Color.purple())
-        embed.add_field(name="💰 Total Coins", value=f"+{total_coins:,}", inline=True)
-        embed.add_field(name="📈 Total XP", value=f"+{total_xp:,}", inline=True)
-        embed.add_field(name="🐉 Monsters Found", value=mob_summary, inline=False)
-        
-        await msg.edit(embed=embed)
-
-    @lootbox.command(name="inventory", aliases=["inv"], description="Check how many lootboxes you own.")
-    async def lootbox_inventory(self, ctx):
-        await ctx.defer()
-        uid = str(ctx.author.id)
-        
-        user_boxes = db.setdefault("lootboxes", {}).setdefault(uid, {})
-        if isinstance(user_boxes, int): 
-            db["lootboxes"][uid] = {"mystic": user_boxes}
-            user_boxes = db["lootboxes"][uid]
-            
-        if not any(user_boxes.values()):
-            return await ctx.send(embed=discord.Embed(description="📦 You have absolutely zero lootboxes. Go buy some!", color=discord.Color.red()))
-            
-        desc = ""
-        for b_type, count in user_boxes.items():
-            if count > 0:
-                name = LOOTBOXES.get(b_type, {"name": b_type})["name"]
-                desc += f"{name}: **{count}**\n"
-                
-        await ctx.send(embed=discord.Embed(title="📦 Your Lootbox Stash", description=desc, color=discord.Color.blue()))
-
-
-    # ========================================================================
-    # LEVELING & QUESTS
-    # ========================================================================
-    @commands.hybrid_command(name="quest", description="Go on an epic quest to earn XP and level up.")
-    @commands.cooldown(1, 3600, commands.BucketType.user)
-    async def quest(self, ctx):
-        await ctx.defer()
-        uid = str(ctx.author.id)
-        level_data = db.setdefault("levels", {}).setdefault(uid, {"xp": 0, "level": 1})
-        
-        if level_data["level"] >= 13000:
-            return await ctx.send(embed=discord.Embed(description="🛑 **Max Level 13,000 Reached!** You are already at the pinnacle.", color=discord.Color.red()))
-        
-        xp_gained = random.randint(300, 800)
-        level_data["xp"] += xp_gained
-        
-        req_xp = int(150 * (level_data['level'] ** 1.5))
-        leveled_up = False
-        
-        while level_data["xp"] >= req_xp:
-            level_data["xp"] -= req_xp
-            level_data["level"] += 1
-            leveled_up = True
-            req_xp = int(150 * (level_data['level'] ** 1.5))
-            
-        save_db(db)
-        
-        desc = f"🗡️ **Dungeon run complete!** You braved the depths and earned **{xp_gained} XP**!"
-        if leveled_up:
-            desc += f"\n\n🎉 **LEVEL UP!** You grew stronger and are now Level **{level_data['level']}**!"
-            
-        await ctx.send(embed=discord.Embed(description=desc, color=discord.Color.orange()))
-
-    @commands.hybrid_command(name="rank", description="Check your current RPG Level and XP.")
-    async def rank(self, ctx, m: discord.Member = None): 
-        await ctx.defer()
-        target = m or ctx.author
-        
-        level_data = db.setdefault("levels", {}).setdefault(str(target.id), {"xp": 0, "level": 1})
-        req = int(150 * (level_data['level'] ** 1.5))
-        
-        embed = discord.Embed(title=f"Rank: {target.name}", description=f"⭐ Level: **{level_data['level']}**\n✨ XP: **{level_data['xp']} / {req}**", color=0x3498db)
-        embed.set_thumbnail(url=str(target.display_avatar.url))
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="leaderboard_levels", aliases=["lbl"], description="View the top-ranked players by RPG Level.")
-    async def leaderboard_levels(self, ctx): 
-        await ctx.defer()
-        sorted_levels = sorted(db.get("levels", {}).items(), key=lambda x: (x[1].get("level", 1), x[1].get("xp", 0)), reverse=True)
-        
-        if not sorted_levels: 
-            return await ctx.send(embed=discord.Embed(description="No ranking data available yet.", color=discord.Color.red()))
-            
-        chunks = [sorted_levels[i:i + 10] for i in range(0, len(sorted_levels), 10)]
-        embeds = []
-        for i, chunk in enumerate(chunks):
-            embed = discord.Embed(title=f"🏆 RPG Level Leaderboard ({i+1}/{len(chunks)})", color=discord.Color.gold())
-            for j, (uid, data) in enumerate(chunk): 
-                embed.add_field(name=f"#{i*10 + j + 1}", value=f"<@{uid}> - Level **{data.get('level', 1)}** (XP: {data.get('xp', 0)})", inline=False)
-            embeds.append(embed)
-            
-        await ctx.send(embed=embeds[0], view=PaginationView(ctx, embeds))
-
-    @commands.hybrid_command(name="givexp", description="Give XP to a user (Admin Only).")
-    @commands.has_permissions(administrator=True)
-    async def givexp(self, ctx, member: discord.Member, amount: int): 
-        await ctx.defer()
-        uid = str(member.id)
-        level_data = db.setdefault("levels", {}).setdefault(uid, {"xp": 0, "level": 1})
-        level_data["xp"] += amount
-        
-        req_xp = int(150 * (level_data['level'] ** 1.5))
-        while level_data["xp"] >= req_xp:
-            level_data["xp"] -= req_xp
-            level_data["level"] += 1
-            req_xp = int(150 * (level_data['level'] ** 1.5))
-            
-        save_db(db)
-        await ctx.send(embed=discord.Embed(description=f"📈 Granted **{amount:,} XP** to {member.mention}. They are now Level **{level_data['level']}**.", color=discord.Color.green()))
-
-
-async def setup(bot):
-    await bot.add_cog(RPG(bot))
+            total_
