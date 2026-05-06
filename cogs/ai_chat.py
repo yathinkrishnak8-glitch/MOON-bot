@@ -2,7 +2,8 @@ import discord
 from discord.ext import commands
 import random
 import re
-from core import db, save_db, get_gif, ask_groq, xp_cooldown
+import asyncio
+from core import db, save_db, get_gif, ask_groq, xp_cooldown, ai_client
 
 class AIChat(commands.Cog):
     def __init__(self, bot):
@@ -45,7 +46,7 @@ class AIChat(commands.Cog):
                 await message.channel.send(embed=discord.Embed(description=f"💤 **{m.name}** is currently AFK: {db['afk'][str(m.id)]}", color=discord.Color.dark_grey()))
 
         # ---------------------------------------------------
-        # 4. HARDCORE LEVELING
+        # 4. HARDCORE LEVELING (Connected to the New GIF System)
         # ---------------------------------------------------
         if uid not in db.setdefault("levels", {}): db["levels"][uid] = {"xp": 0, "level": 1}
         
@@ -68,7 +69,7 @@ class AIChat(commands.Cog):
                 save_db(db)
 
         # ---------------------------------------------------
-        # 5. PURE TEXT AI CHAT (MULTI-USER AWARENESS)
+        # 5. PURE TEXT AI CHAT (MULTI-USER AWARENESS & TIMEOUTS)
         # ---------------------------------------------------
         if message.content.startswith(('!', '/')):
             if message.content.startswith('!') and len(message.content) > 1:
@@ -81,7 +82,7 @@ class AIChat(commands.Cog):
         is_ai_chan = message.guild and message.channel.id == db.get("config", {}).get("ai_channel")
         is_bot_mentioned = self.bot.user in message.mentions
         
-        if is_dm or is_ai_chan or is_bot_mentioned:
+        if (is_dm or is_ai_chan or is_bot_mentioned) and ai_client:
             async with message.channel.typing():
                 try: 
                     hist = []
@@ -100,12 +101,15 @@ class AIChat(commands.Cog):
                                 # Example: "Alex: What's up guys?"
                                 hist.append({"role": "user", "content": f"{m.author.display_name}: {clean_content}"})
                     
-                    reply = await ask_groq(hist)
+                    # 🔥 TIMEOUT SHIELD: Give up if AI takes more than 6 seconds to prevent lag
+                    reply = await asyncio.wait_for(ask_groq(hist), timeout=6.0)
                     
                     if is_bot_mentioned and not is_ai_chan:
                         await message.reply(reply[:2000], mention_author=False)
                     else:
                         await message.channel.send(reply[:2000])
+                except asyncio.TimeoutError:
+                    pass # Silently fail if AI is lagging so the chat doesn't get flooded with errors
                 except Exception as e: 
                     print(f"⚠️ AI Chat Error: {e}")
 
@@ -114,38 +118,55 @@ class AIChat(commands.Cog):
     # AI ANALYSIS COMMANDS
     # ========================================================================
     @commands.hybrid_command(name="vibecheck", description="AI thoroughly analyzes a user's vibe based on chat history.")
+    @commands.cooldown(1, 30, commands.BucketType.channel) # Prevents spamming the API
     async def vibecheck(self, ctx, member: discord.Member):
         await ctx.defer()
+        if not ai_client: return await ctx.send(embed=discord.Embed(description="❌ AI Offline.", color=discord.Color.red()))
+        
         log = "\n".join([m.content async for m in ctx.channel.history(limit=30) if m.author == member and m.content])
         if not log: return await ctx.send(embed=discord.Embed(description="❌ Not enough recent messages from this user.", color=discord.Color.red()))
+        
         try:
-            reply = await ask_groq([{"role": "user", "content": f"Analyze the 'vibe' of this Discord user based on their recent messages. Are they chill, chaotic, toxic, or funny? Give a highly detailed, sarcastic vibe check report:\n\n{log}"}])
+            # 🔥 TIMEOUT SHIELD
+            prompt = f"Analyze the 'vibe' of this Discord user based on their recent messages. Are they chill, chaotic, toxic, or funny? Give a highly detailed, sarcastic vibe check report:\n\n{log}"
+            reply = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}]), timeout=8.0)
             await ctx.send(embed=discord.Embed(title=f"🔮 Vibe Check: {member.name}", description=reply, color=discord.Color.purple()))
-        except:
-            await ctx.send(embed=discord.Embed(description="❌ The AI is currently asleep. Try again later.", color=discord.Color.red()))
+        except Exception:
+            await ctx.send(embed=discord.Embed(description="❌ The AI timed out or is asleep. Try again later.", color=discord.Color.red()))
 
     @commands.hybrid_command(name="tldr", description="AI summarizes the last 50 messages in the channel.")
+    @commands.cooldown(1, 60, commands.BucketType.channel)
     async def tldr(self, ctx): 
         await ctx.defer()
+        if not ai_client: return await ctx.send(embed=discord.Embed(description="❌ AI Offline.", color=discord.Color.red()))
+        
         # 🔥 MULTI-USER FIX HERE TOO: So the AI knows who said what in the summary!
         log = "\n".join([f"{m.author.display_name}: {m.content}" async for m in ctx.channel.history(limit=50) if m.content])
         if not log: return await ctx.send("No messages to summarize.")
+        
         try:
-            reply = await ask_groq([{"role": "user", "content": f"Summarize this conversation concisely, mentioning who was talking about what:\n{log}"}])
+            prompt = f"Summarize this conversation concisely, mentioning who was talking about what:\n{log}"
+            reply = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}]), timeout=8.0)
             await ctx.send(embed=discord.Embed(title="📜 TL;DR", description=reply, color=discord.Color.light_grey()))
-        except:
-            await ctx.send(embed=discord.Embed(description="❌ AI is offline.", color=discord.Color.red()))
+        except Exception:
+            await ctx.send(embed=discord.Embed(description="❌ AI timed out. It couldn't read all that.", color=discord.Color.red()))
 
     @commands.hybrid_command(name="roast_history", description="AI brutally roasts a user based on their message history.")
+    @commands.cooldown(1, 45, commands.BucketType.user)
     async def roast_history(self, ctx, member: discord.Member): 
         await ctx.defer()
+        if not ai_client: return await ctx.send(embed=discord.Embed(description="❌ AI Offline.", color=discord.Color.red()))
+        
         log = "\n".join([m.content async for m in ctx.channel.history(limit=25) if m.author == member and m.content])
         if not log: return await ctx.send(embed=discord.Embed(description="❌ Not enough messages to formulate a roast.", color=discord.Color.red()))
+        
         try:
-            reply = await ask_groq([{"role": "user", "content": f"Brutally roast this user based on these messages they sent:\n{log}"}])
+            prompt = f"Brutally roast this user based on these messages they sent:\n{log}"
+            reply = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}]), timeout=8.0)
             await ctx.send(embed=discord.Embed(title=f"🔥 Roast: {member.name}", description=reply, color=discord.Color.dark_orange()))
-        except:
-            await ctx.send(embed=discord.Embed(description="❌ The AI spared them this time.", color=discord.Color.red()))
+        except Exception:
+            await ctx.send(embed=discord.Embed(description="❌ The AI spared them this time (Timeout).", color=discord.Color.red()))
+
 
 async def setup(bot):
     await bot.add_cog(AIChat(bot))
