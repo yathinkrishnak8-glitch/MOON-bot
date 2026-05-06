@@ -8,7 +8,7 @@ from core import db, save_db, get_gif, ask_groq, ai_client
 from ui import PaginationView 
 
 # ========================================================================
-# MONSTER GACHA SYSTEM & MULTIPLIERS (Upgraded with Combat Stats)
+# MONSTER GACHA SYSTEM, STATS & MULTIPLIERS
 # ========================================================================
 MONSTERS = {
     "Common": {"chance": 50, "value": 1500, "hp": 100, "dmg": 25, "xp_mult": 1.05, "mobs": ["🟢 Slime", "🦇 Cave Bat", "🐀 Plague Rat"]},
@@ -61,13 +61,14 @@ LOOTBOXES = {
 }
 
 # ========================================================================
-# HELPER FUNCTIONS (Combat & Stats)
+# HELPER FUNCTIONS
 # ========================================================================
 def get_mob_stats(mob_name):
     """Dynamically finds the Rarity, HP, DMG, and XP of a monster by its name."""
     for rarity, data in MONSTERS.items():
         if any(base_mob in mob_name for base_mob in data["mobs"]):
             return rarity, data["hp"], data["dmg"], data["xp_mult"]
+            
     # Fallbacks for fusions or dynamic names
     if "Mythic" in mob_name: return "Mythic", 10000, 2500, 3.0
     if "Secret" in mob_name or "Chimera" in mob_name: return "Secret", 25000, 6000, 6.0
@@ -95,7 +96,7 @@ def build_fighter(uid, mob_name):
     }
 
 # ========================================================================
-# UI CLASSES: 3v3 BATTLE ENGINE
+# UI CLASSES: AI 3V3 BATTLE ENGINE
 # ========================================================================
 class TeamBattleView(discord.ui.View):
     def __init__(self, ctx, p1_name, p2_name, t1, t2, is_pvp=False):
@@ -117,7 +118,6 @@ class TeamBattleView(discord.ui.View):
 
     @discord.ui.button(label="⚔️ Execute Next Round", style=discord.ButtonStyle.danger)
     async def next_round(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Only allow participants to click
         if interaction.user.id != self.ctx.author.id and not self.is_pvp:
             return await interaction.response.send_message("❌ This is not your battle!", ephemeral=True)
             
@@ -126,7 +126,8 @@ class TeamBattleView(discord.ui.View):
         t1_alive = [m for m in self.t1 if m['hp'] > 0]
         t2_alive = [m for m in self.t2 if m['hp'] > 0]
         
-        if not t1_alive or not t2_alive: return # Battle over
+        if not t1_alive or not t2_alive:
+            return # Battle already over
             
         combat_log = []
         
@@ -136,12 +137,13 @@ class TeamBattleView(discord.ui.View):
             target = random.choice(t2_alive)
             dmg = int(m['dmg'] * random.uniform(0.85, 1.15))
             
+            # 10% Critical Hit Chance
             is_crit = random.randint(1, 100) <= 10
             if is_crit: dmg = int(dmg * 1.5)
             
             target['hp'] = max(0, target['hp'] - dmg)
-            crit_text = " (CRIT!)" if is_crit else ""
-            combat_log.append(f"[{self.p1_name}]'s {m['name']} used '{m['move']}' on {target['name']} for {dmg} DMG!{crit_text}")
+            crit_text = " (CRITICAL HIT!)" if is_crit else ""
+            combat_log.append(f"[{self.p1_name}]'s {m['name']} used '{m['move']}' on {target['name']} for {dmg} damage!{crit_text}")
             if target['hp'] == 0: t2_alive.remove(target)
 
         # TEAM 2 ATTACKS
@@ -154,22 +156,24 @@ class TeamBattleView(discord.ui.View):
             if is_crit: dmg = int(dmg * 1.5)
             
             target['hp'] = max(0, target['hp'] - dmg)
-            crit_text = " (CRIT!)" if is_crit else ""
-            combat_log.append(f"[{self.p2_name}]'s {m['name']} used '{m['move']}' on {target['name']} for {dmg} DMG!{crit_text}")
+            crit_text = " (CRITICAL HIT!)" if is_crit else ""
+            combat_log.append(f"[{self.p2_name}]'s {m['name']} used '{m['move']}' on {target['name']} for {dmg} damage!{crit_text}")
             if target['hp'] == 0: t1_alive.remove(target)
 
+        # Re-check alive status after combat phase
         t1_alive = [m for m in self.t1 if m['hp'] > 0]
         t2_alive = [m for m in self.t2 if m['hp'] > 0]
         
-        # AI Narration
+        # Generate AI Narration (With Timeout Shield)
         narrative = "The combat was too fast to describe!"
         if ai_client and combat_log:
-            prompt = f"Rewrite this raw RPG combat log into a highly epic, fast-paced 2-sentence battle narration. No markdown headers:\n\n{chr(10).join(combat_log)}"
+            prompt = f"Rewrite this raw RPG combat log into a highly epic, fast-paced 2-sentence battle narration:\n\n{chr(10).join(combat_log)}"
             try:
                 narrative = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=5.0)
             except:
                 narrative = "💥 The clash was explosive! (AI Narration Timed Out)\n" + "\n".join([f"• {log}" for log in combat_log])
 
+        # Check for Win/Loss
         if not t1_alive or not t2_alive:
             for child in self.children: child.disabled = True
             
@@ -183,6 +187,7 @@ class TeamBattleView(discord.ui.View):
                 narrative += f"\n\n🏆 **{self.p2_name} HAS BEEN DEFEATED! {self.p1_name} WINS!**"
                 color = discord.Color.green()
                 if not self.is_pvp:
+                    # PvE Reward
                     reward = 50000 * self.round_num
                     uid = str(self.ctx.author.id)
                     db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + reward
@@ -192,9 +197,11 @@ class TeamBattleView(discord.ui.View):
             color = discord.Color.dark_theme()
 
         self.round_num += 1
+        
         embed = discord.Embed(title=f"⚔️ Round {self.round_num - 1} Clash!", description=narrative, color=color)
         embed.add_field(name=f"🛡️ {self.p1_name}'s Team", value=self.build_team_string(self.t1), inline=True)
         embed.add_field(name=f"👹 {self.p2_name}'s Team", value=self.build_team_string(self.t2), inline=True)
+        
         await interaction.message.edit(embed=embed, view=self)
 
 
@@ -341,7 +348,6 @@ class ActiveTradeView(discord.ui.View):
                 target_zoo = db.setdefault("zoo", {}).setdefault(target_uid, {})
                 
                 user_zoo[mob] -= amt
-                
                 if user_zoo[mob] <= 0: 
                     del user_zoo[mob]
                     # Unequip logic for trades
@@ -614,6 +620,7 @@ class RPG(commands.Cog):
                 
         embed.set_footer(text=f"Total Passive Bonus: +{total_xp_boost}% Quest XP")
         await ctx.send(embed=embed)
+
 
     # ========================================================================
     # STANDARD RPG HUNT & ZOO
@@ -1001,7 +1008,6 @@ class RPG(commands.Cog):
             
         save_db(db)
         await ctx.send(embed=discord.Embed(description=f"📈 Granted **{amount:,} XP** to {member.mention}. They are now Level **{level_data['level']}**.", color=discord.Color.green()))
-
 
 async def setup(bot):
     await bot.add_cog(RPG(bot))
