@@ -2,11 +2,12 @@ import discord
 from discord.ext import commands
 import json
 import asyncio
-from core import db, save_db, gif_db, save_gifs, ai_client, ask_groq
+import traceback
+from core import db, save_db, gif_db, save_gifs, ai_client, ask_groq, is_valid_gif
 from ui import ConfirmView, PaginationView
 
 # ==========================================
-# INTERACTIVE GIF GALLERY UI (Upgraded for Dictionaries)
+# INTERACTIVE GIF GALLERY UI
 # ==========================================
 class GifViewer(discord.ui.View):
     def __init__(self, ctx, category, gifs_dict):
@@ -23,7 +24,11 @@ class GifViewer(discord.ui.View):
             return await interaction.response.edit_message(content=f"🗑️ The `{self.category}` gallery is now completely empty.", embed=None, view=self)
 
         current_name, current_url = self.gifs[self.index]
-        embed = discord.Embed(title=f"📂 GIF Gallery: {self.category}", description=f"**Name:** `{current_name}`\n**Index:** {self.index + 1} of {len(self.gifs)}\n**Link:** [Click Here]({current_url})", color=discord.Color.blurple())
+        embed = discord.Embed(
+            title=f"📂 GIF Gallery: {self.category}", 
+            description=f"**Name:** `{current_name}`\n**Index:** {self.index + 1} of {len(self.gifs)}\n**Link:** [Click Here]({current_url})", 
+            color=discord.Color.blurple()
+        )
         embed.set_image(url=current_url)
         
         self.children[0].disabled = (self.index == 0)
@@ -59,6 +64,40 @@ class GifViewer(discord.ui.View):
             
         await interaction.followup.send(f"✅ **Deleted `{current_name}`** from `{self.category}`.", ephemeral=True)
         await self.update_message(interaction)
+
+
+# ==========================================
+# UI CLASS: HQ ANNOUNCEMENT BUILDER
+# ==========================================
+class AnnouncementModal(discord.ui.Modal, title='Create Server Announcement'):
+    ann_title = discord.ui.TextInput(label='Announcement Title', placeholder='e.g., 🚨 MAJOR SERVER UPDATE', required=True)
+    ann_body = discord.ui.TextInput(label='Message Body', style=discord.TextStyle.paragraph, placeholder='Type your announcement here...', required=True, max_length=3000)
+    ann_color = discord.ui.TextInput(label='Hex Color (Optional)', placeholder='e.g., #FF0000', required=False, default='#2ecc71')
+    ann_image = discord.ui.TextInput(label='Image URL (Optional)', placeholder='https://...', required=False)
+
+    def __init__(self, channel: discord.TextChannel):
+        super().__init__()
+        self.target_channel = channel
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        hex_color = self.ann_color.value.strip().replace("#", "")
+        try:
+            color = int(hex_color, 16) if hex_color else discord.Color.green().value
+        except ValueError:
+            color = discord.Color.green().value
+
+        embed = discord.Embed(title=self.ann_title.value, description=self.ann_body.value, color=color)
+        
+        if self.ann_image.value.strip().startswith("http"):
+            embed.set_image(url=self.ann_image.value.strip())
+            
+        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        embed.set_footer(text="Official Server Announcement")
+
+        await self.target_channel.send(embed=embed)
+        await interaction.followup.send(f"✅ Announcement posted to {self.target_channel.mention}!", ephemeral=True)
 
 
 # ==========================================
@@ -158,7 +197,16 @@ class Admin(commands.Cog):
         self.bot = bot
 
     # ==========================================
-    # DYNAMIC VISUAL GIF MANAGER (Upgraded for Names)
+    # NEW: HQ EMBED ANNOUNCER
+    # ==========================================
+    @commands.hybrid_command(name="announce", description="[Admin] Opens an interactive UI builder to create a beautiful server announcement.")
+    @commands.has_permissions(administrator=True)
+    async def announce(self, ctx, channel: discord.TextChannel = None):
+        target = channel or ctx.channel
+        await ctx.interaction.response.send_modal(AnnouncementModal(target))
+
+    # ==========================================
+    # DYNAMIC VISUAL GIF MANAGER
     # ==========================================
     @commands.hybrid_command(name="gif_add", description="[Admin] Add a new Named GIF to a category.")
     @commands.has_permissions(administrator=True)
@@ -167,8 +215,9 @@ class Admin(commands.Cog):
         c = category.lower()
         n = name.lower().replace(" ", "_")
         
-        if not url.startswith("http"): 
-            return await ctx.send("❌ **Invalid Link! Must start with http.**")
+        valid, msg = is_valid_gif(url)
+        if not valid:
+            return await ctx.send(embed=discord.Embed(description=msg, color=discord.Color.red()))
             
         if c not in gif_db: 
             gif_db[c] = {}
@@ -416,55 +465,64 @@ class Admin(commands.Cog):
 
 
     # ==========================================
-    # THE EPIC 100+ COMMAND MASTERLIST
+    # AUTO-UPDATING DYNAMIC MASTERLIST
     # ==========================================
-    @commands.hybrid_command(name="masterlist", description="View all 100+ bot commands in one massive, epic list.")
+    @commands.hybrid_command(name="masterlist", description="Dynamically view all loaded commands across the entire bot engine.")
     async def masterlist(self, ctx):
         await ctx.defer()
         
         embed = discord.Embed(
-            title="📜 THE ULTIMATE HABIBIBOT MASTERLIST", 
-            description="Every single command currently baked into the HabibiBot Engine. Over 100+ ways to dominate your server.", 
+            title="📜 The Ultimate Masterlist", 
+            description="Every single command currently active in the HabibiBot Engine. This list auto-updates in real-time as modules are loaded.", 
             color=discord.Color.gold()
         )
         
-        embed.add_field(
-            name="🤖 Server Architect & AI", 
-            value="`/ai_template`, `/template_save`, `/template_deploy`, `/template_list`, `/deployserver`, `/setaichannel`, `/setcmdchannel`, `/seteventchannel`, `/gif_add`, `/gif_remove`, `/gif_list`, `/aicommand`", 
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🛡️ Moderation & Security", 
-            value="**Punishments:** `/kick`, `/ban`, `/tempban`, `/timeout`, `/jail`, `/unjail`\n**Warnings:** `/warn`, `/warnings`, `/clearwarns`\n**Security:** `/lockdown`, `/unlockdown`, `/purge`, `/nuke`, `/slowmode`\n**Logs:** `/snipe`, `/editsnipe`", 
-            inline=False
-        )
-        
-        embed.add_field(
-            name="💰 Economy & The Forge", 
-            value="**Money:** `/bal`, `/rich`, `/daily`, `/work`, `/rob`\n**Shop & Crafting:** `/shop`, `/inventory`, `/forge` *(Interactive Crafting/Awakening)*", 
-            inline=False
-        )
-        
-        embed.add_field(
-            name="⚔️ RPG, Games & Bosses", 
-            value="**Monster Hunting:** `/hunt`, `/zoo`, `/fuse_monster`, `/sell_monster`, `/equip`, `/pet`, `/team`, `/upgrade_pet`\n**Epic Raids:** `/bossfight`, `/pve`, `/pvp`\n**Gambling/Gacha:** `/lootbox buy`, `/lootbox open`, `/slots`, `/blackjack`, `/coinflip`\n**Ranks:** `/rank`, `/leaderboard_levels`, `/givexp`, `/quest`", 
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🧠 AI Tools & Utilities", 
-            value="**AI Integration:** `/vibecheck`, `/roast_history`, `/tldr`, `/lore`, `/debate`, `/define`, `/urban`, `/translate`\n**Tools:** `/profile`, `/userhistory`, `/roleinfo`, `/servericon`, `/avatar`, `/serverinfo`, `/ping`, `/giveaway_start`, `/giveaway_roll`, `/remindme`, `/calc`, `/poll`", 
-            inline=False
-        )
-        
-        embed.add_field(
-            name="🤡 Trolls & Roleplay (Prefix: `!`)", 
-            value="**Chaos:** `!fakeban`, `!rickroll`, `!hack`, `!jailbreak`, `!roast`, `!compliment`, `!dadjoke`, `!confess`, `!kill`, `!revive`, `!eightball`, `!choose`, `!spank`\n**Raters:** `!howgay`, `!simpmeter`, `!susmeter`, `!ship`\n**Anime Actions:** `!pat`, `!punch`, `!bite`, `!kiss`, `!smug`, `!cry`, `!quote`, `!powerlevel`, `!domain_expansion`, `!bankai`", 
-            inline=False
-        )
-        
-        embed.set_footer(text="Developed to run servers. Designed to destroy boredom.")
+        # Dictionary to map your Cog names to pretty titles with emojis
+        cog_formatting = {
+            "Admin": "🤖 Setup & Admin",
+            "Moderation": "🛡️ Moderation & Security",
+            "Economy": "💰 Economy & The Forge",
+            "RPG": "⚔️ RPG & Monster Hunting",
+            "Trolls": "🤡 Trolls & Chaos",
+            "FunActions": "🎭 Anime & Roleplay",
+            "Utils": "⚙️ Tools & Utilities",
+            "Casino": "🎲 Casino & Gambling",
+            "AIChat": "🧠 AI Chat & Tools",
+            "AITools": "🔮 Translators & Lore"
+        }
+
+        # Dynamically loop through every single loaded cog in the bot
+        for cog_name, cog in self.bot.cogs.items():
+            cmds = cog.get_commands()
+            
+            # Skip empty modules
+            if not cmds: continue
+            
+            command_list = []
+            for c in cmds:
+                # If it's a Hybrid Command (slash command enabled), mark it with /
+                # If it's a regular old-school text command, mark it with ! (or your prefix)
+                if isinstance(c, commands.HybridCommand) or isinstance(c, commands.HybridGroup):
+                    command_list.append(f"`/{c.name}`")
+                else:
+                    command_list.append(f"`!{c.name}`")
+            
+            # Format the title based on the dictionary, or default to a puzzle piece
+            field_title = cog_formatting.get(cog_name, f"🧩 {cog_name} Module")
+            
+            # Join commands with commas. Truncate if it somehow passes Discord's 1024 char limit.
+            field_value = ", ".join(command_list)
+            if len(field_value) > 1024:
+                field_value = field_value[:1020] + "..."
+                
+            embed.add_field(name=field_title, value=field_value, inline=False)
+            
+        # Catch any stray commands not inside a specific Cog
+        uncategorized = [c for c in self.bot.commands if c.cog is None and c.name != "help"]
+        if uncategorized:
+            stray_cmds = [f"`/{c.name}`" if isinstance(c, commands.HybridCommand) else f"`!{c.name}`" for c in uncategorized]
+            embed.add_field(name="🌐 Uncategorized", value=", ".join(stray_cmds), inline=False)
+
         await ctx.send(embed=embed)
 
 async def setup(bot):
