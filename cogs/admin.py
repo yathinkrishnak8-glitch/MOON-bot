@@ -6,14 +6,15 @@ from core import db, save_db, gif_db, save_gifs, ai_client, ask_groq
 from ui import ConfirmView, PaginationView
 
 # ==========================================
-# INTERACTIVE GIF GALLERY UI
+# INTERACTIVE GIF GALLERY UI (Upgraded for Dictionaries)
 # ==========================================
 class GifViewer(discord.ui.View):
-    def __init__(self, ctx, category, gifs):
+    def __init__(self, ctx, category, gifs_dict):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.category = category
-        self.gifs = gifs
+        # Convert dictionary to a list of (name, url) tuples for pagination
+        self.gifs = list(gifs_dict.items()) 
         self.index = 0
 
     async def update_message(self, interaction: discord.Interaction):
@@ -21,8 +22,9 @@ class GifViewer(discord.ui.View):
             for child in self.children: child.disabled = True
             return await interaction.response.edit_message(content=f"🗑️ The `{self.category}` gallery is now completely empty.", embed=None, view=self)
 
-        embed = discord.Embed(title=f"📂 GIF Gallery: {self.category}", description=f"**Index:** {self.index + 1} of {len(self.gifs)}\n**Link:** [Click Here]({self.gifs[self.index]})", color=discord.Color.blurple())
-        embed.set_image(url=self.gifs[self.index])
+        current_name, current_url = self.gifs[self.index]
+        embed = discord.Embed(title=f"📂 GIF Gallery: {self.category}", description=f"**Name:** `{current_name}`\n**Index:** {self.index + 1} of {len(self.gifs)}\n**Link:** [Click Here]({current_url})", color=discord.Color.blurple())
+        embed.set_image(url=current_url)
         
         self.children[0].disabled = (self.index == 0)
         self.children[1].disabled = (self.index == len(self.gifs) - 1)
@@ -45,14 +47,17 @@ class GifViewer(discord.ui.View):
     async def del_btn(self, interaction, button):
         if interaction.user != self.ctx.author: return await interaction.response.send_message("❌ Not your gallery!", ephemeral=True)
         
-        self.gifs.pop(self.index)
-        gif_db[self.category] = self.gifs
-        save_gifs(gif_db)
+        current_name, _ = self.gifs.pop(self.index)
+        
+        # Delete from the actual database safely
+        if self.category in gif_db and current_name in gif_db[self.category]:
+            del gif_db[self.category][current_name]
+            save_gifs(gif_db)
         
         if self.index >= len(self.gifs) and self.index > 0:
             self.index -= 1
             
-        await interaction.followup.send(f"✅ **Deleted GIF #{self.index + 2}** from `{self.category}`.", ephemeral=True)
+        await interaction.followup.send(f"✅ **Deleted `{current_name}`** from `{self.category}`.", ephemeral=True)
         await self.update_message(interaction)
 
 
@@ -153,42 +158,65 @@ class Admin(commands.Cog):
         self.bot = bot
 
     # ==========================================
-    # DYNAMIC VISUAL GIF MANAGER
+    # DYNAMIC VISUAL GIF MANAGER (Upgraded for Names)
     # ==========================================
-    @commands.hybrid_command(name="gif_add", description="[Admin] Add a new GIF to a category.")
+    @commands.hybrid_command(name="gif_add", description="[Admin] Add a new Named GIF to a category.")
     @commands.has_permissions(administrator=True)
-    async def gif_add(self, ctx, category: str, url: str):
+    async def gif_add(self, ctx, category: str, name: str, url: str):
         await ctx.defer()
         c = category.lower()
-        if not url.startswith("http"): return await ctx.send("❌ **Invalid Link!**")
-        if c not in gif_db: gif_db[c] = []
-        gif_db[c].append(url); save_gifs(gif_db)
-        await ctx.send(embed=discord.Embed(description=f"✅ **GIF Added to `{c}`!**", color=discord.Color.green()).set_image(url=url))
+        n = name.lower().replace(" ", "_")
+        
+        if not url.startswith("http"): 
+            return await ctx.send("❌ **Invalid Link! Must start with http.**")
+            
+        if c not in gif_db: 
+            gif_db[c] = {}
+        if not isinstance(gif_db[c], dict): 
+            gif_db[c] = {} # Safety override
+            
+        gif_db[c][n] = url
+        save_gifs(gif_db)
+        await ctx.send(embed=discord.Embed(description=f"✅ **GIF `{n}` Added to `{c}`!**", color=discord.Color.green()).set_image(url=url))
 
-    @commands.hybrid_command(name="gif_remove", description="[Admin] Remove a GIF by its Index Number.")
+    @commands.hybrid_command(name="gif_remove", description="[Admin] Remove a GIF by its exact Name.")
     @commands.has_permissions(administrator=True)
-    async def gif_remove(self, ctx, category: str, index_number: int):
+    async def gif_remove(self, ctx, category: str, name: str):
         await ctx.defer()
         c = category.lower()
-        if c not in gif_db or not gif_db[c]: return await ctx.send("❌ Category is empty.")
-        if index_number < 1 or index_number > len(gif_db[c]): return await ctx.send("❌ Invalid Index.")
-        gif_db[c].pop(index_number - 1); save_gifs(gif_db)
-        await ctx.send(embed=discord.Embed(description=f"🗑️ **Deleted GIF #{index_number}**.", color=discord.Color.red()))
+        n = name.lower().replace(" ", "_")
+        
+        if c not in gif_db or not gif_db[c] or not isinstance(gif_db[c], dict): 
+            return await ctx.send("❌ Category is empty or does not exist.")
+            
+        if n not in gif_db[c]: 
+            return await ctx.send(f"❌ GIF `{n}` not found in category `{c}`.")
+            
+        del gif_db[c][n]
+        save_gifs(gif_db)
+        await ctx.send(embed=discord.Embed(description=f"🗑️ **Deleted GIF `{n}`** from `{c}`.", color=discord.Color.red()))
 
     @commands.hybrid_command(name="gif_list", description="[Admin] Open the Interactive Visual GIF Gallery.")
     @commands.has_permissions(administrator=True)
     async def gif_list(self, ctx, category: str = None):
         await ctx.defer()
         if not category:
-            cats = "\n".join([f"**{k}**: {len(v)} GIFs" for k, v in gif_db.items()])
+            cats = "\n".join([f"**{k}**: {len(v) if isinstance(v, dict) else 0} GIFs" for k, v in gif_db.items()])
             return await ctx.send(embed=discord.Embed(title="📂 Database Categories", description=cats, color=discord.Color.blue()))
+            
         c = category.lower()
-        if c not in gif_db or not gif_db[c]: return await ctx.send("❌ Category is empty.")
-        gifs = gif_db[c].copy()
-        view = GifViewer(ctx, c, gifs)
-        embed = discord.Embed(title=f"📂 GIF Gallery: {c}", description=f"**Index:** 1 of {len(gifs)}", color=discord.Color.blurple()).set_image(url=gifs[0])
+        if c not in gif_db or not gif_db[c] or not isinstance(gif_db[c], dict): 
+            return await ctx.send("❌ Category is empty or corrupted.")
+            
+        gifs_dict = gif_db[c].copy()
+        view = GifViewer(ctx, c, gifs_dict)
+        first_name, first_url = view.gifs[0]
+        
+        embed = discord.Embed(title=f"📂 GIF Gallery: {c}", description=f"**Name:** `{first_name}`\n**Index:** 1 of {len(view.gifs)}", color=discord.Color.blurple())
+        embed.set_image(url=first_url)
+        
         view.children[0].disabled = True
-        if len(gifs) == 1: view.children[1].disabled = True 
+        if len(view.gifs) == 1: view.children[1].disabled = True 
         await ctx.send(embed=embed, view=view)
 
 
@@ -388,63 +416,55 @@ class Admin(commands.Cog):
 
 
     # ==========================================
-    # AUTO-UPDATING DYNAMIC MASTERLIST
+    # THE EPIC 100+ COMMAND MASTERLIST
     # ==========================================
-    @commands.hybrid_command(name="masterlist", description="Dynamically view all loaded commands across the entire bot engine.")
+    @commands.hybrid_command(name="masterlist", description="View all 100+ bot commands in one massive, epic list.")
     async def masterlist(self, ctx):
         await ctx.defer()
         
         embed = discord.Embed(
-            title="📜 The Ultimate Masterlist", 
-            description="Every single command currently active in the HabibiBot Engine. This list auto-updates in real-time as modules are loaded.", 
+            title="📜 THE ULTIMATE HABIBIBOT MASTERLIST", 
+            description="Every single command currently baked into the HabibiBot Engine. Over 100+ ways to dominate your server.", 
             color=discord.Color.gold()
         )
         
-        # Dictionary to map your Cog names to pretty titles with emojis
-        cog_formatting = {
-            "Admin": "🤖 Setup & Admin",
-            "Moderation": "🛡️ Moderation & Security",
-            "Economy": "💰 Economy & The Forge",
-            "RPG": "⚔️ RPG & Monster Hunting",
-            "Trolls": "🤡 Trolls & Chaos",
-            "FunActions": "🎭 Anime & Roleplay",
-            "Utils": "⚙️ Tools & Utilities",
-            "Casino": "🎲 Casino & Gambling",
-            "AIChat": "🧠 AI Chat & Tools"
-        }
-
-        # Dynamically loop through every single loaded cog in the bot
-        for cog_name, cog in self.bot.cogs.items():
-            cmds = cog.get_commands()
-            
-            # Skip empty modules
-            if not cmds: continue
-            
-            command_list = []
-            for c in cmds:
-                # If it's a Hybrid Command (slash command enabled), mark it with /
-                # If it's a regular old-school text command, mark it with ! (or your prefix)
-                if isinstance(c, commands.HybridCommand) or isinstance(c, commands.HybridGroup):
-                    command_list.append(f"`/{c.name}`")
-                else:
-                    command_list.append(f"`!{c.name}`")
-            
-            # Format the title based on the dictionary, or default to a puzzle piece
-            field_title = cog_formatting.get(cog_name, f"🧩 {cog_name} Module")
-            
-            # Join commands with commas. Truncate if it somehow passes Discord's 1024 char limit.
-            field_value = ", ".join(command_list)
-            if len(field_value) > 1024:
-                field_value = field_value[:1020] + "..."
-                
-            embed.add_field(name=field_title, value=field_value, inline=False)
-            
-        # Catch any stray commands not inside a specific Cog
-        uncategorized = [c for c in self.bot.commands if c.cog is None and c.name != "help"]
-        if uncategorized:
-            stray_cmds = [f"`/{c.name}`" if isinstance(c, commands.HybridCommand) else f"`!{c.name}`" for c in uncategorized]
-            embed.add_field(name="🌐 Uncategorized", value=", ".join(stray_cmds), inline=False)
-
+        embed.add_field(
+            name="🤖 Server Architect & AI", 
+            value="`/ai_template`, `/template_save`, `/template_deploy`, `/template_list`, `/deployserver`, `/setaichannel`, `/setcmdchannel`, `/seteventchannel`, `/gif_add`, `/gif_remove`, `/gif_list`, `/aicommand`", 
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🛡️ Moderation & Security", 
+            value="**Punishments:** `/kick`, `/ban`, `/tempban`, `/timeout`, `/jail`, `/unjail`\n**Warnings:** `/warn`, `/warnings`, `/clearwarns`\n**Security:** `/lockdown`, `/unlockdown`, `/purge`, `/nuke`, `/slowmode`\n**Logs:** `/snipe`, `/editsnipe`", 
+            inline=False
+        )
+        
+        embed.add_field(
+            name="💰 Economy & The Forge", 
+            value="**Money:** `/bal`, `/rich`, `/daily`, `/work`, `/rob`\n**Shop & Crafting:** `/shop`, `/inventory`, `/forge` *(Interactive Crafting/Awakening)*", 
+            inline=False
+        )
+        
+        embed.add_field(
+            name="⚔️ RPG, Games & Bosses", 
+            value="**Monster Hunting:** `/hunt`, `/zoo`, `/fuse_monster`, `/sell_monster`, `/equip`, `/pet`, `/team`, `/upgrade_pet`\n**Epic Raids:** `/bossfight`, `/pve`, `/pvp`\n**Gambling/Gacha:** `/lootbox buy`, `/lootbox open`, `/slots`, `/blackjack`, `/coinflip`\n**Ranks:** `/rank`, `/leaderboard_levels`, `/givexp`, `/quest`", 
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🧠 AI Tools & Utilities", 
+            value="**AI Integration:** `/vibecheck`, `/roast_history`, `/tldr`, `/lore`, `/debate`, `/define`, `/urban`, `/translate`\n**Tools:** `/profile`, `/userhistory`, `/roleinfo`, `/servericon`, `/avatar`, `/serverinfo`, `/ping`, `/giveaway_start`, `/giveaway_roll`, `/remindme`, `/calc`, `/poll`", 
+            inline=False
+        )
+        
+        embed.add_field(
+            name="🤡 Trolls & Roleplay (Prefix: `!`)", 
+            value="**Chaos:** `!fakeban`, `!rickroll`, `!hack`, `!jailbreak`, `!roast`, `!compliment`, `!dadjoke`, `!confess`, `!kill`, `!revive`, `!eightball`, `!choose`, `!spank`\n**Raters:** `!howgay`, `!simpmeter`, `!susmeter`, `!ship`\n**Anime Actions:** `!pat`, `!punch`, `!bite`, `!kiss`, `!smug`, `!cry`, `!quote`, `!powerlevel`, `!domain_expansion`, `!bankai`", 
+            inline=False
+        )
+        
+        embed.set_footer(text="Developed to run servers. Designed to destroy boredom.")
         await ctx.send(embed=embed)
 
 async def setup(bot):
