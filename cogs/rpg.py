@@ -8,31 +8,18 @@ from core import db, save_db, get_gif, ask_groq, ai_client
 from ui import PaginationView 
 
 # ========================================================================
-# MONSTER GACHA SYSTEM & MULTIPLIERS
+# MONSTER GACHA SYSTEM, STATS & MULTIPLIERS
 # ========================================================================
 MONSTERS = {
-    "Common": {"chance": 50, "value": 1500, "mobs": ["🟢 Slime", "🦇 Cave Bat", "🐀 Plague Rat"]},
-    "Uncommon": {"chance": 25, "value": 5000, "mobs": ["👺 Goblin", "🐺 Dire Wolf", "💀 Skeleton Warrior"]},
-    "Rare": {"chance": 12, "value": 25000, "mobs": ["👹 Orc Brute", "🗿 Stone Gargoyle", "👻 Cursed Wraith"]},
-    "Epic": {"chance": 8, "value": 100000, "mobs": ["🐉 Lesser Dragon", "🦅 Griffin", "🐍 Basilisk"]},
-    "Legendary": {"chance": 3.5, "value": 1000000, "mobs": ["🔥 Immortal Phoenix", "🐙 Abyssal Kraken", "⚡ Storm Behemoth"]},
-    "Mythic": {"chance": 1.2, "value": 10000000, "mobs": ["🌌 Astral Devourer", "☠️ Lich King", "👁️ Eldritch Watcher"]},
-    "Secret": {"chance": 0.3, "value": 50000000, "mobs": ["💠 The Creator", "♾️ Omega Entity", "👑 Soul Sovereign"]}
+    "Common": {"chance": 50, "value": 1500, "hp": 100, "dmg": 25, "xp_mult": 1.05, "mobs": ["🟢 Slime", "🦇 Cave Bat", "🐀 Plague Rat"]},
+    "Uncommon": {"chance": 25, "value": 5000, "hp": 250, "dmg": 60, "xp_mult": 1.10, "mobs": ["👺 Goblin", "🐺 Dire Wolf", "💀 Skeleton Warrior"]},
+    "Rare": {"chance": 12, "value": 25000, "hp": 600, "dmg": 150, "xp_mult": 1.25, "mobs": ["👹 Orc Brute", "🗿 Stone Gargoyle", "👻 Cursed Wraith"]},
+    "Epic": {"chance": 8, "value": 100000, "hp": 1500, "dmg": 400, "xp_mult": 1.50, "mobs": ["🐉 Lesser Dragon", "🦅 Griffin", "🐍 Basilisk"]},
+    "Legendary": {"chance": 3.5, "value": 1000000, "hp": 4000, "dmg": 1000, "xp_mult": 2.0, "mobs": ["🔥 Immortal Phoenix", "🐙 Abyssal Kraken", "⚡ Storm Behemoth"]},
+    "Mythic": {"chance": 1.2, "value": 10000000, "hp": 10000, "dmg": 2500, "xp_mult": 3.0, "mobs": ["🌌 Astral Devourer", "☠️ Lich King", "👁️ Eldritch Watcher"]},
+    "Secret": {"chance": 0.3, "value": 50000000, "hp": 25000, "dmg": 6000, "xp_mult": 6.0, "mobs": ["💠 The Creator", "♾️ Omega Entity", "👑 Soul Sovereign"]}
 }
 
-PET_MULTIPLIERS = {
-    "Common": 1.05,     # +5% XP
-    "Uncommon": 1.10,   # +10% XP
-    "Rare": 1.25,       # +25% XP
-    "Epic": 1.50,       # +50% XP
-    "Legendary": 2.0,   # +100% XP
-    "Mythic": 3.0,      # +200% XP
-    "Secret": 6.0       # +500% XP
-}
-
-# ========================================================================
-# LOOTBOX CONFIGURATION
-# ========================================================================
 LOOTBOXES = {
     "wooden": {
         "price": 25000, 
@@ -61,6 +48,133 @@ LOOTBOXES = {
 }
 
 # ========================================================================
+# HELPER FUNCTIONS
+# ========================================================================
+def get_mob_stats(mob_name):
+    """Dynamically finds the Rarity, HP, DMG, and XP of a monster by its name."""
+    for rarity, data in MONSTERS.items():
+        if any(base_mob in mob_name for base_mob in data["mobs"]):
+            return rarity, data["hp"], data["dmg"], data["xp_mult"]
+            
+    # Fallbacks for fusions or dynamic names
+    if "Mythic" in mob_name: return "Mythic", 10000, 2500, 3.0
+    if "Secret" in mob_name or "Chimera" in mob_name: return "Secret", 25000, 6000, 6.0
+    return "Common", 100, 25, 1.05
+
+def generate_health_bar(hp, max_hp):
+    if hp <= 0: return "`[💀 DEFEATED  ]`"
+    ratio = max(hp / max_hp, 0.0)
+    filled = int(ratio * 10)
+    return f"`[{'█' * filled}{'░' * (10 - filled)}]`"
+
+# ========================================================================
+# UI CLASSES: AI 3V3 BATTLE ENGINE
+# ========================================================================
+class TeamBattleView(discord.ui.View):
+    def __init__(self, ctx, p1_name, p2_name, t1, t2, is_pvp=False):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.p1_name = p1_name
+        self.p2_name = p2_name
+        self.t1 = t1  # List of dicts: name, hp, max_hp, dmg, move
+        self.t2 = t2
+        self.is_pvp = is_pvp
+        self.round_num = 1
+
+    def build_team_string(self, team):
+        desc = ""
+        for m in team:
+            bar = generate_health_bar(m['hp'], m['max_hp'])
+            desc += f"**{m['name']}**\n{bar} **{m['hp']} / {m['max_hp']}**\n"
+        return desc if desc else "💀 *Wiped Out*"
+
+    @discord.ui.button(label="⚔️ Execute Next Round", style=discord.ButtonStyle.danger)
+    async def next_round(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        t1_alive = [m for m in self.t1 if m['hp'] > 0]
+        t2_alive = [m for m in self.t2 if m['hp'] > 0]
+        
+        if not t1_alive or not t2_alive:
+            return # Battle already over
+            
+        combat_log = []
+        
+        # TEAM 1 ATTACKS
+        for m in t1_alive:
+            if not t2_alive: break
+            target = random.choice(t2_alive)
+            dmg = int(m['dmg'] * random.uniform(0.85, 1.15))
+            
+            # 10% Critical Hit Chance
+            is_crit = random.randint(1, 100) <= 10
+            if is_crit: dmg = int(dmg * 1.5)
+            
+            target['hp'] = max(0, target['hp'] - dmg)
+            crit_text = " (CRITICAL HIT!)" if is_crit else ""
+            combat_log.append(f"[{self.p1_name}]'s {m['name']} used '{m['move']}' on {target['name']} for {dmg} damage!{crit_text}")
+            if target['hp'] == 0: t2_alive.remove(target)
+
+        # TEAM 2 ATTACKS
+        for m in t2_alive:
+            if not t1_alive: break
+            target = random.choice(t1_alive)
+            dmg = int(m['dmg'] * random.uniform(0.85, 1.15))
+            
+            is_crit = random.randint(1, 100) <= 10
+            if is_crit: dmg = int(dmg * 1.5)
+            
+            target['hp'] = max(0, target['hp'] - dmg)
+            crit_text = " (CRITICAL HIT!)" if is_crit else ""
+            combat_log.append(f"[{self.p2_name}]'s {m['name']} used '{m['move']}' on {target['name']} for {dmg} damage!{crit_text}")
+            if target['hp'] == 0: t1_alive.remove(target)
+
+        # Re-check alive status after combat phase
+        t1_alive = [m for m in self.t1 if m['hp'] > 0]
+        t2_alive = [m for m in self.t2 if m['hp'] > 0]
+        
+        # Generate AI Narration (With Timeout Shield)
+        narrative = "The combat was too fast to describe!"
+        if ai_client and combat_log:
+            prompt = f"Rewrite this raw RPG combat log into a highly epic, fast-paced 2-sentence battle narration:\n\n{chr(10).join(combat_log)}"
+            try:
+                narrative = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=5.0)
+            except:
+                narrative = "💥 The clash was explosive! (AI Narration Timed Out)\n" + "\n".join([f"• {log}" for log in combat_log])
+
+        # Check for Win/Loss
+        if not t1_alive or not t2_alive:
+            for child in self.children: child.disabled = True
+            
+            if not t1_alive and not t2_alive:
+                narrative += "\n\n🤝 **IT'S A DRAW! Both teams wiped each other out!**"
+                color = discord.Color.orange()
+            elif not t1_alive:
+                narrative += f"\n\n💀 **{self.p1_name} HAS BEEN DEFEATED! {self.p2_name} WINS!**"
+                color = discord.Color.red()
+            else:
+                narrative += f"\n\n🏆 **{self.p2_name} HAS BEEN DEFEATED! {self.p1_name} WINS!**"
+                color = discord.Color.green()
+                if not self.is_pvp:
+                    # PvE Reward
+                    reward = 50000 * self.round_num
+                    uid = str(self.ctx.author.id)
+                    db.setdefault("economy", {})[uid] = db["economy"].get(uid, 0) + reward
+                    save_db(db)
+                    narrative += f"\n💰 **Loot Earned:** {reward:,} 🪙"
+        else:
+            color = discord.Color.dark_theme()
+
+        self.round_num += 1
+        
+        embed = discord.Embed(title=f"⚔️ Round {self.round_num - 1} Clash!", description=narrative, color=color)
+        embed.add_field(name=f"🛡️ {self.p1_name}'s Team", value=self.build_team_string(self.t1), inline=True)
+        embed.add_field(name=f"👹 {self.p2_name}'s Team", value=self.build_team_string(self.t2), inline=True)
+        
+        await interaction.message.edit(embed=embed, view=self)
+
+
+# ========================================================================
 # UI CLASS: AI Black Market View
 # ========================================================================
 class BlackMarketView(discord.ui.View):
@@ -86,166 +200,25 @@ class BlackMarketView(discord.ui.View):
             
         db.setdefault("economy", {})[self.uid] = db["economy"].get(self.uid, 0) + payout
         
-        # If they sold their equipped pet, unequip it
-        equipped = db.get("equipped_pet", {}).get(self.uid)
-        if equipped and equipped["name"] == self.mob_name and self.mob_name not in user_zoo:
-            del db["equipped_pet"][self.uid]
+        # Unequip if sold
+        team = db.get("team", {}).get(self.uid, {})
+        slots_to_clear = [s for s, m in team.items() if m["name"] == self.mob_name and self.mob_name not in user_zoo]
+        for s in slots_to_clear: del team[s]
             
         save_db(db)
 
-        for child in self.children: 
-            child.disabled = True
+        for child in self.children: child.disabled = True
         
-        embed = discord.Embed(
-            title="🤝 Deal Closed!", 
-            description=f"You sold **{self.amount}x {self.mob_name}** to **{buyer['buyer']}** for **{payout:,} 🪙**!\n\n🗣️ *\"{buyer['quote']}\"*", 
-            color=discord.Color.green()
-        )
+        embed = discord.Embed(title="🤝 Deal Closed!", description=f"You sold **{self.amount}x {self.mob_name}** to **{buyer['buyer']}** for **{payout:,} 🪙**!\n\n🗣️ *\"{buyer['quote']}\"*", color=discord.Color.green())
         await interaction.response.edit_message(embed=embed, view=self)
         self.stop()
 
     @discord.ui.button(label="Sell to Buyer 1", style=discord.ButtonStyle.success)
     async def b1(self, interaction, button): await self.process_sale(interaction, 0)
-
     @discord.ui.button(label="Sell to Buyer 2", style=discord.ButtonStyle.primary)
     async def b2(self, interaction, button): await self.process_sale(interaction, 1)
-
     @discord.ui.button(label="Sell to Buyer 3", style=discord.ButtonStyle.danger)
     async def b3(self, interaction, button): await self.process_sale(interaction, 2)
-
-
-# ========================================================================
-# UI CLASSES: Interactive Trading System
-# ========================================================================
-class TradeOfferModal(discord.ui.Modal, title="Offer Assets"):
-    asset_type = discord.ui.TextInput(label="Type: 'coins', 'item', or 'monster'", placeholder="e.g. monster", required=True)
-    asset_name = discord.ui.TextInput(label="Exact Name (Leave blank if coins)", placeholder="e.g. Slime [The Cowardly]", required=False)
-    amount = discord.ui.TextInput(label="Amount", placeholder="e.g. 1000", required=True)
-
-    def __init__(self, view, player_num):
-        super().__init__()
-        self.view = view
-        self.player_num = player_num 
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        uid = str(interaction.user.id)
-        a_type = self.asset_type.value.strip().lower()
-        a_name = self.asset_name.value.strip()
-        
-        try: amt = int(self.amount.value.strip())
-        except ValueError: return await interaction.followup.send("❌ Amount must be a valid number.", ephemeral=True)
-
-        if amt <= 0: return await interaction.followup.send("❌ Amount must be greater than 0.", ephemeral=True)
-
-        if a_type == "coins":
-            if db.setdefault("economy", {}).get(uid, 0) < amt:
-                return await interaction.followup.send("❌ You don't have that many coins.", ephemeral=True)
-            self.view.offers[self.player_num]["coins"] += amt
-            
-        elif a_type == "item":
-            inv = [i.lower() for i in db.setdefault("inventory", {}).get(uid, [])]
-            if inv.count(a_name.lower()) < amt:
-                return await interaction.followup.send("❌ You don't have enough of that item.", ephemeral=True)
-            exact = next(i for i in db["inventory"][uid] if i.lower() == a_name.lower())
-            self.view.offers[self.player_num]["items"][exact] = self.view.offers[self.player_num]["items"].get(exact, 0) + amt
-            
-        elif a_type in ["monster", "mob"]:
-            zoo = db.setdefault("zoo", {}).get(uid, {})
-            exact = next((m for m in zoo if a_name.lower() in m.lower()), None)
-            if not exact or zoo[exact] < amt:
-                return await interaction.followup.send("❌ You don't have enough of that monster.", ephemeral=True)
-            self.view.offers[self.player_num]["monsters"][exact] = self.view.offers[self.player_num]["monsters"].get(exact, 0) + amt
-            
-        else:
-            return await interaction.followup.send("❌ Invalid type. Use 'coins', 'item', or 'monster'.", ephemeral=True)
-
-        self.view.locked = {1: False, 2: False}
-        await self.view.update_ui(interaction)
-
-class ActiveTradeView(discord.ui.View):
-    def __init__(self, p1, p2):
-        super().__init__(timeout=300)
-        self.p1 = p1
-        self.p2 = p2
-        self.offers = {1: {"coins": 0, "items": {}, "monsters": {}}, 2: {"coins": 0, "items": {}, "monsters": {}}}
-        self.locked = {1: False, 2: False}
-
-    def format_offer(self, p_num):
-        o = self.offers[p_num]
-        lines = [f"🪙 **Coins:** {o['coins']:,}"]
-        if o["items"]: lines.append("🎒 **Items:** " + ", ".join([f"{k} x{v}" for k, v in o["items"].items()]))
-        if o["monsters"]: lines.append("🐾 **Monsters:** " + ", ".join([f"{k} x{v}" for k, v in o["monsters"].items()]))
-        status = "✅ Locked" if self.locked[p_num] else "⏳ Trading..."
-        return "\n".join(lines) + f"\n\n**Status:** {status}"
-
-    async def update_ui(self, interaction):
-        embed = discord.Embed(title="🤝 Active Trade Session", color=discord.Color.blurple())
-        embed.add_field(name=f"Player 1: {self.p1.name}", value=self.format_offer(1), inline=False)
-        embed.add_field(name=f"Player 2: {self.p2.name}", value=self.format_offer(2), inline=False)
-        
-        if self.locked[1] and self.locked[2]: await self.execute_trade(interaction)
-        else: await interaction.message.edit(embed=embed, view=self)
-
-    async def execute_trade(self, interaction):
-        u1, u2 = str(self.p1.id), str(self.p2.id)
-        
-        for p_num, uid, target_uid in [(1, u1, u2), (2, u2, u1)]:
-            o = self.offers[p_num]
-            if o["coins"] > 0:
-                db["economy"][uid] -= o["coins"]
-                db.setdefault("economy", {})[target_uid] = db["economy"].get(target_uid, 0) + o["coins"]
-            for item, amt in o["items"].items():
-                for _ in range(amt):
-                    db["inventory"][uid].remove(item)
-                    db.setdefault("inventory", {}).setdefault(target_uid, []).append(item)
-            for mob, amt in o["monsters"].items():
-                user_zoo = db.setdefault("zoo", {}).setdefault(uid, {})
-                target_zoo = db.setdefault("zoo", {}).setdefault(target_uid, {})
-                
-                user_zoo[mob] -= amt
-                if user_zoo[mob] <= 0: del user_zoo[mob]
-                target_zoo[mob] = target_zoo.get(mob, 0) + amt
-
-        save_db(db)
-        for child in self.children: child.disabled = True
-        await interaction.message.edit(embed=discord.Embed(title="🎉 Trade Successful!", description="All assets were securely transferred.", color=discord.Color.green()), view=self)
-        self.stop()
-
-    @discord.ui.button(label="➕ Add Offer", style=discord.ButtonStyle.primary)
-    async def offer_btn(self, interaction, button):
-        if interaction.user == self.p1: await interaction.response.send_modal(TradeOfferModal(self, 1))
-        elif interaction.user == self.p2: await interaction.response.send_modal(TradeOfferModal(self, 2))
-        else: await interaction.response.send_message("❌ Not your trade!", ephemeral=True)
-
-    @discord.ui.button(label="🔒 Lock / Unlock", style=discord.ButtonStyle.success)
-    async def lock_btn(self, interaction, button):
-        if interaction.user == self.p1: self.locked[1] = not self.locked[1]
-        elif interaction.user == self.p2: self.locked[2] = not self.locked[2]
-        else: return await interaction.response.send_message("❌ Not your trade!", ephemeral=True)
-        await interaction.response.defer()
-        await self.update_ui(interaction)
-
-    @discord.ui.button(label="❌ Cancel Trade", style=discord.ButtonStyle.danger)
-    async def cancel_btn(self, interaction, button):
-        if interaction.user not in [self.p1, self.p2]: return await interaction.response.send_message("❌ Not your trade!", ephemeral=True)
-        for child in self.children: child.disabled = True
-        await interaction.message.edit(embed=discord.Embed(description="🛑 Trade cancelled by a participant.", color=discord.Color.red()), view=self)
-        self.stop()
-
-class TradeAcceptView(discord.ui.View):
-    def __init__(self, p1, p2):
-        super().__init__(timeout=60)
-        self.p1 = p1
-        self.p2 = p2
-
-    @discord.ui.button(label="✅ Accept Trade", style=discord.ButtonStyle.success)
-    async def accept(self, interaction, button):
-        if interaction.user != self.p2: return await interaction.response.send_message("❌ Only the requested user can accept!", ephemeral=True)
-        view = ActiveTradeView(self.p1, self.p2)
-        embed = discord.Embed(title="🤝 Active Trade Session", description="Click 'Add Offer' to build your trade.", color=discord.Color.blurple())
-        await interaction.response.edit_message(embed=embed, view=view)
-        self.stop()
 
 
 # ========================================================================
@@ -253,7 +226,7 @@ class TradeAcceptView(discord.ui.View):
 # ========================================================================
 class BossRaidView(discord.ui.View):
     def __init__(self, boss_name, max_hp):
-        super().__init__(timeout=600) # 10 minute raid timer
+        super().__init__(timeout=600)
         self.boss_name = boss_name
         self.max_hp = max_hp
         self.hp = max_hp
@@ -316,26 +289,201 @@ class RPG(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    def build_fighter(self, uid, mob_name):
+        """Helper to construct a battle-ready dictionary from a monster name."""
+        rarity, hp, dmg, xp = get_mob_stats(mob_name)
+        moves = db.setdefault("monster_moves", {}).setdefault(uid, {})
+        custom_move = moves.get(mob_name, "Basic Strike")
+        
+        return {
+            "name": mob_name,
+            "rarity": rarity,
+            "max_hp": hp,
+            "hp": hp,
+            "dmg": dmg,
+            "move": custom_move
+        }
+
+    # ========================================================================
+    # 3V3 TEAM BATTLES (PvE & PvP)
+    # ========================================================================
+    @commands.hybrid_command(name="pve", description="Send your equipped team of up to 3 monsters into a wild battle!")
+    @commands.cooldown(1, 45, commands.BucketType.member)
+    async def pve(self, ctx):
+        await ctx.defer()
+        uid = str(ctx.author.id)
+        
+        user_team = db.get("team", {}).get(uid, {})
+        if not user_team:
+            return await ctx.send(embed=discord.Embed(description="❌ You don't have any monsters equipped! Use `/equip <slot> <name>`.", color=discord.Color.red()))
+            
+        # Build Player 1 Team
+        t1 = [self.build_fighter(uid, mob["name"]) for mob in user_team.values()]
+        
+        # Build AI Team based on player's strength
+        t2 = []
+        rarities = list(MONSTERS.keys())
+        for _ in range(len(t1)):
+            enemy_rarity = random.choice(rarities)
+            enemy_name = f"{random.choice(MONSTERS[enemy_rarity]['mobs'])} [Wild]"
+            
+            # AI doesn't have an owner ID, we generate stats purely on name
+            r, hp, dmg, xp = get_mob_stats(enemy_name)
+            t2.append({"name": enemy_name, "rarity": r, "max_hp": hp, "hp": hp, "dmg": dmg, "move": "Wild Thrash"})
+
+        view = TeamBattleView(ctx, ctx.author.name, "Wild Encounter", t1, t2, is_pvp=False)
+        
+        embed = discord.Embed(title="🌲 Wild Encounter!", description="Your team stumbled across wild monsters!\nClick **[⚔️ Execute Next Round]** to clash!", color=discord.Color.dark_green())
+        embed.add_field(name=f"🛡️ {ctx.author.name}'s Team", value=view.build_team_string(t1), inline=True)
+        embed.add_field(name=f"👹 Wild Team", value=view.build_team_string(t2), inline=True)
+        
+        await ctx.send(embed=embed, view=view)
+
+    @commands.hybrid_command(name="pvp", description="Challenge another player's equipped team to a 3v3 duel!")
+    @commands.cooldown(1, 60, commands.BucketType.member)
+    async def pvp(self, ctx, opponent: discord.Member):
+        await ctx.defer()
+        u1, u2 = str(ctx.author.id), str(opponent.id)
+        
+        if u1 == u2 or opponent.bot:
+            return await ctx.send("❌ Invalid opponent.")
+            
+        t1_data = db.get("team", {}).get(u1, {})
+        t2_data = db.get("team", {}).get(u2, {})
+        
+        if not t1_data: return await ctx.send(embed=discord.Embed(description="❌ You have no team equipped!", color=discord.Color.red()))
+        if not t2_data: return await ctx.send(embed=discord.Embed(description=f"❌ {opponent.name} has no team equipped!", color=discord.Color.red()))
+            
+        t1 = [self.build_fighter(u1, mob["name"]) for mob in t1_data.values()]
+        t2 = [self.build_fighter(u2, mob["name"]) for mob in t2_data.values()]
+
+        view = TeamBattleView(ctx, ctx.author.name, opponent.name, t1, t2, is_pvp=True)
+        
+        embed = discord.Embed(title="⚔️ PvP DUEL INITIATED!", description=f"{ctx.author.mention} challenged {opponent.mention} to a team battle!\nClick **[⚔️ Execute Next Round]** to simulate combat!", color=discord.Color.red())
+        embed.add_field(name=f"🛡️ {ctx.author.name}'s Team", value=view.build_team_string(t1), inline=True)
+        embed.add_field(name=f"🛡️ {opponent.name}'s Team", value=view.build_team_string(t2), inline=True)
+        
+        await ctx.send(embed=embed, view=view)
+
+
+    # ========================================================================
+    # TEAM MANAGEMENT & UPGRADES
+    # ========================================================================
+    @commands.hybrid_command(name="equip", description="Equip a monster to your 3-man active team! (Slot 1, 2, or 3)")
+    async def equip(self, ctx, slot: int, *, exact_name: str):
+        await ctx.defer()
+        if slot not in [1, 2, 3]:
+            return await ctx.send(embed=discord.Embed(description="❌ Invalid slot! You can only equip to slot `1`, `2`, or `3`.", color=discord.Color.red()))
+            
+        uid = str(ctx.author.id)
+        zoo_inv = db.get("zoo", {}).get(uid, {})
+        
+        exact_match = next((m for m in zoo_inv if exact_name.lower() in m.lower()), None)
+        if not exact_match:
+            return await ctx.send(embed=discord.Embed(description=f"❌ You don't own a monster named `{exact_name}` in your zoo.", color=discord.Color.red()))
+            
+        rarity, _, _, _ = get_mob_stats(exact_match)
+
+        db.setdefault("team", {}).setdefault(uid, {})[str(slot)] = {"name": exact_match, "rarity": rarity}
+        save_db(db)
+        
+        embed = discord.Embed(title="🐾 Pet Equipped!", description=f"You successfully assigned **{exact_match}** ({rarity}) to **Slot {slot}**!\nYour team will fight for you in `/pve` and boost your `/quest` XP.", color=discord.Color.green())
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="team", description="Check your current 3v3 equipped team.")
+    async def team(self, ctx, member: discord.Member = None):
+        await ctx.defer()
+        target = member or ctx.author
+        uid = str(target.id)
+        
+        # Auto-Migrate Old Pet System to Slot 1 safely
+        if "equipped_pet" in db and uid in db["equipped_pet"]:
+            old_pet = db["equipped_pet"].pop(uid)
+            db.setdefault("team", {}).setdefault(uid, {})["1"] = old_pet
+            save_db(db)
+
+        team = db.get("team", {}).get(uid, {})
+        if not team:
+            return await ctx.send(embed=discord.Embed(description=f"❌ {target.name} does not have any team members equipped. Use `/equip`.", color=discord.Color.dark_grey()))
+            
+        embed = discord.Embed(title=f"🐾 {target.name}'s Active Team", description="These monsters boost your `/quest` XP and fight for you in `/pve` and `/pvp`.", color=discord.Color.gold())
+        
+        total_xp_boost = 0
+        for i in range(1, 4):
+            slot_str = str(i)
+            if slot_str in team:
+                mob = team[slot_str]
+                _, hp, dmg, xp_mult = get_mob_stats(mob["name"])
+                custom_move = db.get("monster_moves", {}).get(uid, {}).get(mob["name"], "Basic Strike")
+                
+                total_xp_boost += int((xp_mult - 1.0) * 100)
+                embed.add_field(name=f"Slot {i}: {mob['name']}", value=f"💎 **Rarity:** {mob['rarity']}\n❤️ **HP:** {hp:,} | ⚔️ **DMG:** {dmg:,}\n🔮 **Move:** {custom_move}", inline=False)
+            else:
+                embed.add_field(name=f"Slot {i}: [Empty]", value="Use `/equip` to add a monster.", inline=False)
+                
+        embed.set_footer(text=f"Total Passive Bonus: +{total_xp_boost}% Quest XP")
+        await ctx.send(embed=embed)
+
+    @commands.hybrid_command(name="upgrade_pet", description="AI generates a powerful custom move for your monster! (Cost: 50k)")
+    @commands.cooldown(1, 45, commands.BucketType.member)
+    async def upgrade_pet(self, ctx, *, exact_name: str):
+        await ctx.defer()
+        uid = str(ctx.author.id)
+        cost = 50000
+        
+        zoo_inv = db.get("zoo", {}).get(uid, {})
+        exact_match = next((m for m in zoo_inv if exact_name.lower() in m.lower()), None)
+        
+        if not exact_match:
+            return await ctx.send(embed=discord.Embed(description=f"❌ You don't own `{exact_name}`.", color=discord.Color.red()))
+            
+        if db.setdefault("economy", {}).get(uid, 0) < cost:
+            return await ctx.send(embed=discord.Embed(description=f"❌ You need {cost:,} 🪙 to upgrade a monster.", color=discord.Color.red()))
+            
+        db["economy"][uid] -= cost
+        save_db(db)
+        
+        # 70% Success Chance
+        if random.randint(1, 100) > 70:
+            return await ctx.send(embed=discord.Embed(description=f"💥 **UPGRADE FAILED!** You spent 50,000 🪙 but **{exact_match}** couldn't grasp the new technique.", color=discord.Color.dark_red()))
+            
+        if not ai_client:
+            return await ctx.send(embed=discord.Embed(description="❌ **AI Offline.** The upgrade center is closed.", color=discord.Color.red()))
+            
+        msg = await ctx.send(embed=discord.Embed(description=f"🔮 **Channeling cosmic energy into {exact_match}...**", color=discord.Color.blurple()))
+        
+        prompt = f"Generate a badass, epic 2-to-3 word RPG attack move name for a monster named '{exact_match}'. Output ONLY the move name, nothing else. No quotes."
+        try:
+            # 🔥 TIMEOUT SHIELD
+            new_move = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=5.0)
+            
+            db.setdefault("monster_moves", {}).setdefault(uid, {})[exact_match] = new_move
+            save_db(db)
+            
+            await msg.edit(embed=discord.Embed(title="✨ UPGRADE SUCCESS!", description=f"**{exact_match}** successfully consumed the essence and learned a new signature attack:\n\n🔮 **{new_move}**", color=discord.Color.gold()))
+        except Exception as e:
+            await msg.edit(embed=discord.Embed(description="❌ AI Timeout. The upgrade was refunded.", color=discord.Color.red()))
+            db["economy"][uid] += cost
+            save_db(db)
+
+    # ========================================================================
+    # STANDARD RPG HUNT & ZOO
+    # ========================================================================
     @commands.hybrid_command(name="hunt", description="Venture into the wild to capture rare monsters.")
-    @commands.cooldown(1, 45, commands.BucketType.user)
+    @commands.cooldown(1, 45, commands.BucketType.member)
     async def hunt(self, ctx): 
         await ctx.defer()
         uid = str(ctx.author.id)
         
-        # 🌟 Beautiful loading screen before the RNG calculates
         msg = await ctx.send(embed=discord.Embed(description="🌲 **Venturing into the tall grass...**", color=discord.Color.dark_green()))
         await asyncio.sleep(1.5)
         
-        # ==========================================
-        # 1. MYTHIC ANOMALY (2% CHANCE)
-        # ==========================================
         if random.randint(1, 100) <= 2 and ai_client:
             prompt = """I just triggered a 1-of-1 ultra rare mythic boss spawn. Generate a unique Boss monster. 
             Output ONLY a raw, perfectly formatted JSON object exactly like this: 
             {"name": "String", "title": "String", "value": 15000000}"""
             
             try:
-                # 🔥 TIMEOUT SHIELD: If Groq lags, jump to fallback instantly
                 res = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=4.0)
                 start, end = res.find('{'), res.rfind('}')
                 if start == -1 or end == -1: raise Exception("JSON format hallucination.")
@@ -351,12 +499,8 @@ class RPG(commands.Cog):
                 embed.set_image(url="https://media.giphy.com/media/l41YkxvU8c7J7Bba0/giphy.gif")
                 return await msg.edit(embed=embed)
             except Exception as e: 
-                print(f"⚠️ AI Mythic Generation Failed/Timed Out: {e}")
-                # Failsafe drops it to the normal hunt securely below
+                print(f"⚠️ AI Mythic Timeout: {e}")
 
-        # ==========================================
-        # 2. NORMAL HUNT (98% CHANCE OR FALLBACK)
-        # ==========================================
         rarities = list(MONSTERS.keys())
         weights = [MONSTERS[r]["chance"] for r in rarities]
         caught_rarity = random.choices(rarities, weights=weights, k=1)[0]
@@ -366,7 +510,6 @@ class RPG(commands.Cog):
         if ai_client:
             prompt2 = f"Generate a short title or nature for a {caught_mob} e.g. [The Brave]. Return ONLY the bracketed string. Nothing else."
             try:
-                # 🔥 TIMEOUT SHIELD
                 res_nature = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt2}], inject_personality=False), timeout=4.0)
                 match = re.search(r'\[.*?\]', res_nature)
                 if match: nature = match.group(0)
@@ -380,7 +523,7 @@ class RPG(commands.Cog):
         save_db(db)
 
         colors = {"Common": 0x95a5a6, "Uncommon": 0x2ecc71, "Rare": 0x3498db, "Epic": 0x9b59b6, "Legendary": 0xf1c40f, "Mythic": 0xe91e63, "Secret": 0x00d2d3}
-        embed = discord.Embed(title="🏹 The Hunt!", description=f"You ventured into the wild and caught a **{full_name}**!\n\n**Rarity:** {caught_rarity}\n**Base Value:** {MONSTERS[caught_rarity]['value']:,} 🪙", color=colors.get(caught_rarity, 0x95a5a6))
+        embed = discord.Embed(title="🏹 The Hunt!", description=f"You ventured into the wild and caught a **{full_name}**!\n\n**Rarity:** {caught_rarity}\n**Base Value:** {MONSTERS.get(caught_rarity, {}).get('value', 1500):,} 🪙", color=colors.get(caught_rarity, 0x95a5a6))
         await msg.edit(embed=embed)
 
 
@@ -400,50 +543,6 @@ class RPG(commands.Cog):
         await ctx.send(embed=embeds[0], view=PaginationView(ctx, embeds))
 
 
-    # ========================================================================
-    # THE ACTIVE PET SYSTEM
-    # ========================================================================
-    @commands.hybrid_command(name="equip", description="Equip a monster from your zoo as your active pet for XP boosts!")
-    async def equip(self, ctx, *, exact_name: str):
-        await ctx.defer()
-        uid = str(ctx.author.id)
-        zoo_inv = db.get("zoo", {}).get(uid, {})
-        
-        exact_match = next((m for m in zoo_inv if exact_name.lower() in m.lower()), None)
-        if not exact_match:
-            return await ctx.send(embed=discord.Embed(description=f"❌ You don't own a monster named `{exact_name}` in your zoo.", color=discord.Color.red()))
-            
-        # Determine Rarity for the multiplier
-        pet_rarity = "Common"
-        for r, data in MONSTERS.items():
-            if any(mob in exact_match for mob in data["mobs"]):
-                pet_rarity = r
-                break
-        if "Mythic" in exact_match: pet_rarity = "Mythic"
-        if "Secret" in exact_match or "Chimera" in exact_match: pet_rarity = "Secret"
-
-        db.setdefault("equipped_pet", {})[uid] = {"name": exact_match, "rarity": pet_rarity}
-        save_db(db)
-        
-        mult = int((PET_MULTIPLIERS.get(pet_rarity, 1.0) - 1.0) * 100)
-        embed = discord.Embed(title="🐾 Pet Equipped!", description=f"You equipped **{exact_match}** ({pet_rarity}) as your active companion!\n\n✨ **Passive Bonus:** +{mult}% XP from `/quest`", color=discord.Color.green())
-        await ctx.send(embed=embed)
-
-    @commands.hybrid_command(name="pet", description="Check your currently equipped companion.")
-    async def pet(self, ctx, member: discord.Member = None):
-        await ctx.defer()
-        target = member or ctx.author
-        uid = str(target.id)
-        
-        pet = db.get("equipped_pet", {}).get(uid)
-        if not pet:
-            return await ctx.send(embed=discord.Embed(description=f"❌ {target.name} does not have a pet equipped. Use `/equip`.", color=discord.Color.dark_grey()))
-            
-        mult = int((PET_MULTIPLIERS.get(pet['rarity'], 1.0) - 1.0) * 100)
-        embed = discord.Embed(title=f"🐾 {target.name}'s Companion", description=f"**{pet['name']}**\n\n💎 **Rarity:** {pet['rarity']}\n✨ **Bonus:** +{mult}% Quest XP", color=discord.Color.gold())
-        await ctx.send(embed=embed)
-
-
     @commands.hybrid_command(name="fuse_monster", description="Fuse two monsters to create a powerful Chimera.")
     async def fuse_monster(self, ctx, mob1: str, mob2: str):
         await ctx.defer()
@@ -460,7 +559,6 @@ class RPG(commands.Cog):
         Output ONLY a valid JSON object exactly like this: {{"name": "String", "desc": "String"}}"""
         
         try:
-            # 🔥 TIMEOUT SHIELD
             res = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=5.0)
             start, end = res.find('{'), res.rfind('}')
             if start == -1 or end == -1: raise Exception("AI JSON format error.")
@@ -492,16 +590,15 @@ class RPG(commands.Cog):
         if not found_mob or user_zoo[found_mob] < amount: 
             return await ctx.send(embed=discord.Embed(description=f"❌ You don't own {amount}x of that monster.", color=discord.Color.red()))
             
-        # 🔥 PERFECT VALUATION LOGIC FIX
-        base = 1500
-        for rarity, data in MONSTERS.items():
-            if any(mob in found_mob for mob in data["mobs"]):
-                base = data["value"]
-                break
-        if "Mythic" in found_mob: base = 10000000
-        if "Secret" in found_mob or "Chimera" in found_mob: base = 50000000
+        rarity, hp, dmg, xp = get_mob_stats(found_mob)
+        base_val = 1500
+        for r, data in MONSTERS.items():
+            if r == rarity: base_val = data.get("value", 1500)
+            
+        if "Mythic" in found_mob: base_val = 10000000
+        if "Secret" in found_mob or "Chimera" in found_mob: base_val = 50000000
         
-        total_val = base * amount
+        total_val = base_val * amount
         
         prompt = f"""I am selling '{amount}x {found_mob}' (Estimated Base: {total_val}). Generate 3 shady black market buyers. One lowballs, one is fair, one overpays. 
         Output ONLY a JSON array of 3 objects exactly like this:
@@ -511,7 +608,6 @@ class RPG(commands.Cog):
         ]"""
         
         try:
-            # 🔥 TIMEOUT SHIELD
             res = await asyncio.wait_for(ask_groq([{"role": "user", "content": prompt}], inject_personality=False), timeout=6.0)
             start, end = res.find('['), res.rfind(']')
             if start == -1 or end == -1: raise Exception("AI JSON format error.")
@@ -524,31 +620,6 @@ class RPG(commands.Cog):
             await ctx.send(embed=embed, view=BlackMarketView(ctx, uid, found_mob, amount, buyers))
         except Exception as e: 
             await ctx.send(embed=discord.Embed(description="❌ The black market was raided by the FBI (AI timeout). Try selling later.", color=discord.Color.red()))
-
-    @commands.hybrid_command(name="trade", description="Trade coins, items, and monsters with another player.")
-    async def trade(self, ctx, member: discord.Member):
-        if member.bot or member == ctx.author: return await ctx.send("❌ You can't trade with a bot or yourself.", ephemeral=True)
-        embed = discord.Embed(title="🤝 Trade Request", description=f"{member.mention}, **{ctx.author.name}** wants to trade with you!", color=discord.Color.gold())
-        await ctx.send(content=member.mention, embed=embed, view=TradeAcceptView(ctx.author, member))
-
-    @commands.hybrid_command(name="bossfight", description="Summon a massive server-wide Raid Boss.")
-    @commands.cooldown(1, 3600, commands.BucketType.guild)
-    async def bossfight(self, ctx):
-        await ctx.defer()
-        boss_names = ["The Abyssal Devourer", "Mecha-Godzilla V2", "Fallen Seraphim", "Cursed Lich King"]
-        boss_name = random.choice(boss_names)
-        max_hp = 10000 + (len(ctx.guild.members) * 100) 
-        
-        view = BossRaidView(boss_name, max_hp)
-        ratio = max(view.hp / view.max_hp, 0.0)
-        filled = int(ratio * 15)
-        hp_bar = f"[{'█' * filled}{'░' * (15 - filled)}]"
-        
-        embed = discord.Embed(title=f"⚔️ RAID BOSS SPAWNED", description=f"**{boss_name}** has invaded the server!\nClick **Strike** to attack. Damage scales with your `/rank`!", color=discord.Color.red())
-        embed.add_field(name="HP", value=f"`{hp_bar}`\n**{view.hp:,} / {view.max_hp:,}**", inline=False)
-        embed.set_image(url="https://media.giphy.com/media/xT9IgzoKnwFNmISR8I/giphy.gif")
-        
-        await ctx.send(embed=embed, view=view)
 
 
     # ========================================================================
@@ -581,7 +652,6 @@ class RPG(commands.Cog):
             
         db["economy"][uid] -= cost
         
-        # Safe migration for old DB format
         user_boxes = db.setdefault("lootboxes", {}).setdefault(uid, {})
         if isinstance(user_boxes, int): 
             db["lootboxes"][uid] = {"mystic": user_boxes}
@@ -603,7 +673,6 @@ class RPG(commands.Cog):
         if amount < 1 or amount > 10:
             return await ctx.send(embed=discord.Embed(description="❌ You can only open between 1 and 10 boxes at a time to prevent spam.", color=discord.Color.red()))
 
-        # Safe migration check
         user_boxes = db.setdefault("lootboxes", {}).setdefault(uid, {})
         if isinstance(user_boxes, int):
             db["lootboxes"][uid] = {"mystic": user_boxes}
@@ -624,11 +693,9 @@ class RPG(commands.Cog):
         user_zoo = db.setdefault("zoo", {}).setdefault(uid, {})
         
         for _ in range(amount):
-            # Roll Coins & XP
             total_coins += random.randint(*config["coin_range"])
             total_xp += random.randint(*config["xp_range"])
             
-            # Roll Mob
             rarity = random.choices(config["rarities"], weights=config["weights"], k=1)[0]
             mob = f"{random.choice(MONSTERS[rarity]['mobs'])} [Boxed]"
             mobs_caught[mob] = mobs_caught.get(mob, 0) + 1
@@ -670,10 +737,10 @@ class RPG(commands.Cog):
 
 
     # ========================================================================
-    # LEVELING & QUESTS (With Pet Multipliers)
+    # LEVELING & QUESTS (With Multi-Pet Multipliers)
     # ========================================================================
     @commands.hybrid_command(name="quest", description="Go on an epic quest to earn XP and level up.")
-    @commands.cooldown(1, 3600, commands.BucketType.user)
+    @commands.cooldown(1, 3600, commands.BucketType.member)
     async def quest(self, ctx):
         await ctx.defer()
         uid = str(ctx.author.id)
@@ -682,18 +749,16 @@ class RPG(commands.Cog):
         if level_data["level"] >= 13000:
             return await ctx.send(embed=discord.Embed(description="🛑 **Max Level 13,000 Reached!** You are already at the pinnacle.", color=discord.Color.red()))
         
-        # XP Multiplier Logic via Equipped Pet
-        pet = db.get("equipped_pet", {}).get(uid)
-        multiplier = 1.0
-        pet_text = ""
+        # XP Multiplier Logic via Team
+        team = db.get("team", {}).get(uid, {})
+        total_mult = 1.0
         
-        if pet:
-            mult = PET_MULTIPLIERS.get(pet["rarity"], 1.0)
-            multiplier = mult
-            pet_text = f"\n\n🐾 **{pet['name']}** helped you find {int((mult-1)*100)}% more XP!"
-        
+        for mob in team.values():
+            _, _, _, xp_mult = get_mob_stats(mob["name"])
+            total_mult += (xp_mult - 1.0)
+            
         base_xp = random.randint(300, 800)
-        xp_gained = int(base_xp * multiplier)
+        xp_gained = int(base_xp * total_mult)
         level_data["xp"] += xp_gained
         
         req_xp = int(150 * (level_data['level'] ** 1.5))
@@ -707,7 +772,9 @@ class RPG(commands.Cog):
             
         save_db(db)
         
-        desc = f"🗡️ **Dungeon run complete!** You braved the depths and earned **{xp_gained:,} XP**!{pet_text}"
+        bonus_text = f"\n\n🐾 Your team provided a **+{int((total_mult-1.0)*100)}%** XP Boost!" if total_mult > 1.0 else ""
+        desc = f"🗡️ **Dungeon run complete!** You braved the depths and earned **{xp_gained:,} XP**!{bonus_text}"
+        
         if leveled_up:
             desc += f"\n\n🎉 **LEVEL UP!** You grew stronger and are now Level **{level_data['level']}**!"
             
