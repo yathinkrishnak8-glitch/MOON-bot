@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import json
 import asyncio
+import random
 import traceback
 from core import db, save_db, gif_db, save_gifs, ai_client, ask_groq, is_valid_gif
 from ui import ConfirmView, PaginationView
@@ -24,9 +25,10 @@ class GifViewer(discord.ui.View):
             return await interaction.response.edit_message(content=f"🗑️ The `{self.category}` gallery is now completely empty.", embed=None, view=self)
 
         current_name, current_url = self.gifs[self.index]
+        
         embed = discord.Embed(
             title=f"📂 GIF Gallery: {self.category}", 
-            description=f"**Name:** `{current_name}`\n**Index:** {self.index + 1} of {len(self.gifs)}\n**Link:** [Click Here]({current_url})", 
+            description=f"**Link:** {current_url}\n**Delete ID:** `{current_name}`\n**Index:** {self.index + 1} of {len(self.gifs)}", 
             color=discord.Color.blurple()
         )
         embed.set_image(url=current_url)
@@ -62,8 +64,9 @@ class GifViewer(discord.ui.View):
         if self.index >= len(self.gifs) and self.index > 0:
             self.index -= 1
             
-        await interaction.followup.send(f"✅ **Deleted `{current_name}`** from `{self.category}`.", ephemeral=True)
         await self.update_message(interaction)
+        try: await interaction.followup.send(f"✅ **Deleted `{current_name}`** from `{self.category}`.", ephemeral=True)
+        except: pass
 
 
 # ==========================================
@@ -196,9 +199,6 @@ class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    # ==========================================
-    # NEW: HQ EMBED ANNOUNCER
-    # ==========================================
     @commands.hybrid_command(name="announce", description="[Admin] Opens an interactive UI builder to create a beautiful server announcement.")
     @commands.has_permissions(administrator=True)
     async def announce(self, ctx, channel: discord.TextChannel = None):
@@ -206,13 +206,17 @@ class Admin(commands.Cog):
         await ctx.interaction.response.send_modal(AnnouncementModal(target))
 
     # ==========================================
-    # DYNAMIC VISUAL GIF MANAGER
+    # DYNAMIC VISUAL GIF MANAGER (Auto-Naming Upgrade)
     # ==========================================
     @commands.hybrid_command(name="gif_add", description="[Admin] Add a new Named GIF to a category.")
     @commands.has_permissions(administrator=True)
-    async def gif_add(self, ctx, category: str, name: str, url: str):
+    async def gif_add(self, ctx, category: str, url: str, name: str = None):
         await ctx.defer()
         c = category.lower()
+        
+        # 🔥 UPGRADE: If no name is provided, auto-generate one!
+        if not name:
+            name = f"img_{random.randint(10000, 99999)}"
         n = name.lower().replace(" ", "_")
         
         valid, msg = is_valid_gif(url)
@@ -222,13 +226,13 @@ class Admin(commands.Cog):
         if c not in gif_db: 
             gif_db[c] = {}
         if not isinstance(gif_db[c], dict): 
-            gif_db[c] = {} # Safety override
+            gif_db[c] = {} 
             
         gif_db[c][n] = url
         save_gifs(gif_db)
-        await ctx.send(embed=discord.Embed(description=f"✅ **GIF `{n}` Added to `{c}`!**", color=discord.Color.green()).set_image(url=url))
+        await ctx.send(embed=discord.Embed(description=f"✅ **GIF Added!**\n**Category:** `{c}`\n**Delete ID:** `{n}`", color=discord.Color.green()).set_image(url=url))
 
-    @commands.hybrid_command(name="gif_remove", description="[Admin] Remove a GIF by its exact Name.")
+    @commands.hybrid_command(name="gif_remove", description="[Admin] Remove a GIF by its exact Delete ID.")
     @commands.has_permissions(administrator=True)
     async def gif_remove(self, ctx, category: str, name: str):
         await ctx.defer()
@@ -239,29 +243,55 @@ class Admin(commands.Cog):
             return await ctx.send("❌ Category is empty or does not exist.")
             
         if n not in gif_db[c]: 
-            return await ctx.send(f"❌ GIF `{n}` not found in category `{c}`.")
+            return await ctx.send(f"❌ GIF ID `{n}` not found in category `{c}`.")
             
         del gif_db[c][n]
         save_gifs(gif_db)
         await ctx.send(embed=discord.Embed(description=f"🗑️ **Deleted GIF `{n}`** from `{c}`.", color=discord.Color.red()))
 
-    @commands.hybrid_command(name="gif_list", description="[Admin] Open the Interactive Visual GIF Gallery.")
+    @commands.hybrid_command(name="gif_list", description="[Admin] Open the Interactive Visual GIF Gallery or view the Master Database.")
     @commands.has_permissions(administrator=True)
     async def gif_list(self, ctx, category: str = None):
         await ctx.defer()
+        
+        # 🔥 UPGRADE: Beautiful Dashboard for empty /gif_list commands
         if not category:
-            cats = "\n".join([f"**{k}**: {len(v) if isinstance(v, dict) else 0} GIFs" for k, v in gif_db.items()])
-            return await ctx.send(embed=discord.Embed(title="📂 Database Categories", description=cats, color=discord.Color.blue()))
+            total_gifs = sum(len(v) for v in gif_db.values() if isinstance(v, dict))
+            
+            embed = discord.Embed(
+                title="🗄️ Master GIF Database", 
+                description=f"**Total Folders:** {len(gif_db)}\n**Total Animations:** {total_gifs}\n\n*Use `/gif_list category:<name>` to open a specific visual gallery and manage images.*", 
+                color=discord.Color.blue()
+            )
+            
+            # Sort categories alphabetically for clean UI
+            sorted_cats = sorted(gif_db.items())
+            
+            # Split into clean columns (15 categories per column)
+            chunked_cats = [sorted_cats[i:i + 15] for i in range(0, len(sorted_cats), 15)]
+            
+            for chunk in chunked_cats:
+                field_text = ""
+                for k, v in chunk:
+                    count = len(v) if isinstance(v, dict) else 0
+                    field_text += f"📁 **{k}** ➔ `{count}`\n"
+                embed.add_field(name="Categories", value=field_text, inline=True)
+                
+            return await ctx.send(embed=embed)
             
         c = category.lower()
         if c not in gif_db or not gif_db[c] or not isinstance(gif_db[c], dict): 
-            return await ctx.send("❌ Category is empty or corrupted.")
+            return await ctx.send(embed=discord.Embed(description=f"❌ The category `{c}` is completely empty or does not exist.", color=discord.Color.red()))
             
         gifs_dict = gif_db[c].copy()
         view = GifViewer(ctx, c, gifs_dict)
         first_name, first_url = view.gifs[0]
         
-        embed = discord.Embed(title=f"📂 GIF Gallery: {c}", description=f"**Name:** `{first_name}`\n**Index:** 1 of {len(view.gifs)}", color=discord.Color.blurple())
+        embed = discord.Embed(
+            title=f"📂 GIF Gallery: {c}", 
+            description=f"**Link:** {first_url}\n**Delete ID:** `{first_name}`\n**Index:** 1 of {len(view.gifs)}", 
+            color=discord.Color.blurple()
+        )
         embed.set_image(url=first_url)
         
         view.children[0].disabled = True
@@ -477,7 +507,6 @@ class Admin(commands.Cog):
             color=discord.Color.gold()
         )
         
-        # Dictionary to map your Cog names to pretty titles with emojis
         cog_formatting = {
             "Admin": "🤖 Setup & Admin",
             "Moderation": "🛡️ Moderation & Security",
@@ -491,33 +520,26 @@ class Admin(commands.Cog):
             "AITools": "🔮 Translators & Lore"
         }
 
-        # Dynamically loop through every single loaded cog in the bot
         for cog_name, cog in self.bot.cogs.items():
             cmds = cog.get_commands()
             
-            # Skip empty modules
             if not cmds: continue
             
             command_list = []
             for c in cmds:
-                # If it's a Hybrid Command (slash command enabled), mark it with /
-                # If it's a regular old-school text command, mark it with ! (or your prefix)
                 if isinstance(c, commands.HybridCommand) or isinstance(c, commands.HybridGroup):
                     command_list.append(f"`/{c.name}`")
                 else:
                     command_list.append(f"`!{c.name}`")
             
-            # Format the title based on the dictionary, or default to a puzzle piece
             field_title = cog_formatting.get(cog_name, f"🧩 {cog_name} Module")
             
-            # Join commands with commas. Truncate if it somehow passes Discord's 1024 char limit.
             field_value = ", ".join(command_list)
             if len(field_value) > 1024:
                 field_value = field_value[:1020] + "..."
                 
             embed.add_field(name=field_title, value=field_value, inline=False)
             
-        # Catch any stray commands not inside a specific Cog
         uncategorized = [c for c in self.bot.commands if c.cog is None and c.name != "help"]
         if uncategorized:
             stray_cmds = [f"`/{c.name}`" if isinstance(c, commands.HybridCommand) else f"`!{c.name}`" for c in uncategorized]
