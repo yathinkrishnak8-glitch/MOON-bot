@@ -54,7 +54,7 @@ def save_db(data):
 
 
 # ========================================================================
-# ASYNC GIF LIBRARY SYSTEM (Upgraded to Named Dictionary Format)
+# ASYNC GIF LIBRARY SYSTEM
 # ========================================================================
 def load_gifs_sync():
     if not os.path.exists(GIF_FILE):
@@ -93,9 +93,11 @@ def get_gif(category):
     """Pulls a random URL from the dictionary of named gifs."""
     category_data = gif_db.get(category, {})
     if isinstance(category_data, dict) and category_data:
+        # Shuffles natively through available options
         return random.choice(list(category_data.values()))
-    # Reverts to a funny "Image not found" gif if somehow empty
-    return "https://media.giphy.com/media/Kx1nQEQigkUUM/giphy.gif"
+    
+    # Returning None safely removes the image instead of forcing a generic fallback
+    return None
 
 def is_valid_gif(url):
     """
@@ -107,7 +109,6 @@ def is_valid_gif(url):
     if not url.startswith("http"): 
         return False, "❌ Invalid URL format. Must start with `http` or `https`."
         
-    # Block common mistake: copying the webpage URL instead of the image URL
     if "tenor.com/view/" in url or "giphy.com/gifs/" in url:
         return False, "❌ **You pasted a Website Link!**\nRight-click the GIF and select **'Copy Image Address'** or **'Open Image in New Tab'**. The link MUST end in `.gif` or be a raw media URL (e.g., `media1.tenor.com/...`)."
         
@@ -138,7 +139,6 @@ async def ask_groq(messages, inject_personality=True):
             res = await ai_client.chat.completions.create(model=model, messages=messages)
             return res.choices[0].message.content.strip()
         except Exception as e: 
-            # 🔥 Proper Error Logging so you can debug the AI
             print(f"⚠️ [Groq AI Engine] Model {model} failed: {e}")
             continue 
             
